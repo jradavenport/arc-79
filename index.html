@@ -255,7 +255,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.20';
+const VERSION = 'v0.22';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -329,7 +329,7 @@ const CONFIG = {
   edgeMargin: 0.04,           // how far past the edge an object must go to count as gone
 
   // ---- Object mix (relative weights for random spawns) ------------------
-  mix: { mainBelt: 0.70, comet: 0.08, star: 0.22 },
+  mix: { mainBelt: 0.66, comet: 0.12, star: 0.22 },
 
   // ---- Object types ------------------------------------------------------
   mainBelt: {
@@ -344,7 +344,7 @@ const CONFIG = {
   comet: {
     speedMin: 0.0125,         // slowest (≈8 s wait)
     speedMax: 0.02,           // fastest (≈5 s wait)
-    points: 30,
+    points: 35,               // worth a lingering slot: about 5 points per slot-second vs ~4 for an asteroid
     size: 0.005, sizeMinPx: 2.5, sizeMaxPx: 5,  // nucleus radius
     tailDots: 9,              // number of dots in the pixel tail
     maxOnScreen: 2,           // comets linger (~40 s on screen), so never more than this many at once;
@@ -355,7 +355,7 @@ const CONFIG = {
     speedMax: 0.28,
     arcDistance: 0.20,        // its own arc distance (overrides the global one): ≈0.7–0.9 s to turn blue
     minCrossTime: 2.5,        // its path is always on screen at least this long (re-rolled if a path is shorter)
-    points: 90,
+    points: 50,
                               // (how many per night, and their warning, are in `nights` above)
     windowStart: 34,          // a night's only near-Earth object arrives between windowStart...
     windowEnd: 53,            // ...and windowEnd (pulled earlier if needed so it can finish crossing before the night ends)
@@ -372,7 +372,7 @@ const CONFIG = {
     arcDistance: 0.20,        // ≈0.4–0.5 s to turn blue on night 3
     minCrossTime: 2.5,        // its path is always on screen at least this long
     warningFactor: 1.0,       // its warning as a fraction of the night's warningLead (1.0 = same as near-Earth objects)
-    points: 180,              // 2× a near-Earth object
+    points: 100,              // 2× a near-Earth object
     damage: 2,                // health lost if it gets away
     size: 0.012, sizeMinPx: 7, sizeMaxPx: 13,
   },
