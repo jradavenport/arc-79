@@ -105,12 +105,14 @@
     border: 1.5px solid rgba(232, 236, 245, 0.45);
   }
 
-  /* ---- Pause button (top centre, during play) ---- */
-  #pauseBtn {
+  /* ---- Pause and mute buttons (top centre, side by side, during play) ---- */
+  .hud-btn {
     position: fixed;
     top: calc(env(safe-area-inset-top, 0px) + 12px);
     left: 50%;
-    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 40px;
     height: 40px;
     padding: 0;
@@ -122,7 +124,12 @@
     font-size: 13px;
     letter-spacing: 0;
   }
-  #pauseBtn.hidden { display: none; }
+  .hud-btn.hidden { display: none; }
+  #pauseBtn { transform: translateX(calc(-100% - 6px)); }
+  #muteBtn  { transform: translateX(6px); }
+  #muteBtn svg { width: 18px; height: 18px; }
+  #muteBtn .off, #muteBtn.muted .on { display: none; }
+  #muteBtn.muted .off { display: block; }
 
   /* ---- Pause menu and About screen ---- */
   .menu { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 28px; }
@@ -167,13 +174,21 @@
   <div class="panel summary" id="summaryPanel"></div>
 </div>
 
-<button id="pauseBtn" class="hidden" aria-label="Pause">❚❚</button>
+<button id="pauseBtn" class="hud-btn hidden" aria-label="Pause">❚❚</button>
+<button id="muteBtn" class="hud-btn hidden" aria-label="Mute">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor" stroke="none"/>
+    <path class="on" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/>
+    <path class="off" d="M16 9l6 6M22 9l-6 6"/>
+  </svg>
+</button>
 
 <div id="pause" class="overlay hidden" style="cursor:default">
   <div class="panel">
     <div class="label">PAUSED</div>
     <div class="menu">
       <button id="resumeBtn">RESUME</button>
+      <button id="soundBtn" class="secondary">SOUND: ON</button>
       <button id="restartBtn" class="secondary">RESTART</button>
     </div>
   </div>
@@ -297,27 +312,172 @@ const CONFIG = {
     blue: '#00BABC',         // Rubin Turquoise (Rubin visual identity)
   },
 
+  // ---- Sound -------------------------------------------------------------
+  // The good sounds (tag, blue, link) are notes from a major pentatonic
+  // scale, so any mix of them is consonant. Each tagged object picks its own
+  // note and keeps it: its blue chime is that note an octave up, and its link
+  // run starts from it. The bad-news sounds sit outside the scale on purpose.
+  // Frequencies are in Hz; phone speakers barely play anything below ~150 Hz.
+  sound: {
+    enabled: true,            // master switch for all sound
+    volume: 0.6,              // master volume, 0 to 1
+    key: 72,                  // root note of the scale as a MIDI number (72 = the C above middle C)
+    scale: [0, 2, 4, 7, 9],   // major pentatonic: semitones above the root (C D E G A)
+    tag:   { octave: 0, length: 0.09, volume: 0.30 },   // plucky single note
+    ready: { octave: 1, length: 0.9,  volume: 0.18 },   // soft bell, an octave above its tag note
+    link:  {
+      octave: 0,              // the run starts on the object's own note, in this octave (0 = same as its tag)
+      notes: { mainBelt: 2, comet: 3, neo: 5 },         // length of the rising run, by type
+      gap: 0.065,             // seconds between notes in the run
+      length: 0.35,           // how long each note rings
+      volume: 0.24,
+    },
+    full:  { freq: 190, toFreq: 95, length: 0.12, volume: 0.45 },  // dull thud, pitch drops
+    warn:  { high: 988, low: 740, beep: 0.16, volume: 0.16 },      // high-low pairs for the whole warningLead
+    miss:  { freq: 330, toFreq: 110, length: 0.7, volume: 0.30 },  // low downward slide
+    minGap: 0.08,             // blue chimes that land together are spaced at least this far apart (seconds)
+  },
+
   // ---- Debug -------------------------------------------------------------
   debugTapRadius: false,      // draw the tap area around every object
 };
 
 
 /* ==========================================================================
-   SOUND HOOKS
-   Silent in the base version. Each hook is already called at the right
-   moment, so adding sound later means filling these in with Web Audio.
-   unlock() is called from the "tap to start" tap, which is where browsers
-   allow an AudioContext to be created.
+   SOUND
+   Generated with Web Audio: no audio files. It follows the phone's own
+   silent switch and volume (we never override the silent switch), and the
+   in-game mute silences it on top of that.
+   Browsers only allow sound after a tap, so unlock() runs on the taps that
+   start or resume a night.
    ========================================================================== */
-const Sound = {
-  unlock() {},
-  tag() {},        // first tag: a short blip
-  ready() {},      // turning blue: a soft chime
-  link() {},       // link: the main reward
-  full() {},       // tap with a full buffer: a dull thud
-  warn() {},       // critical target incoming
-  miss() {},       // critical target missed: a low note
-};
+const Sound = (() => {
+  const S = CONFIG.sound;
+  let actx = null;            // the AudioContext, created on the first tap
+  let master = null;          // master volume
+  let muted = false;          // in-game mute (resets when the page reloads)
+  let lastNote = -1;          // last tag note, so two tags in a row differ
+  let nextReadyAt = 0;        // earliest time the next blue chime may start
+
+  // Note number n counts up the pentatonic scale: 0-4 is the first octave,
+  // 5-9 the next, and so on. Turn it into a frequency.
+  function noteHz(n) {
+    const octave = Math.floor(n / S.scale.length);
+    const degree = ((n % S.scale.length) + S.scale.length) % S.scale.length;
+    const midi = S.key + 12 * octave + S.scale[degree];
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  const live = () => S.enabled && !muted && actx && actx.state === 'running';
+
+  // One note: an oscillator through a gain envelope (fast attack, smooth
+  // decay). toFreq slides the pitch over the note's length.
+  function tone({ freq, toFreq, type = 'sine', at = 0, length, volume, attack = 0.005 }) {
+    const t0 = actx.currentTime + at;
+    const osc = actx.createOscillator();
+    const env = actx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    if (toFreq) osc.frequency.exponentialRampToValueAtTime(toFreq, t0 + length);
+    env.gain.setValueAtTime(0.0001, t0);
+    env.gain.exponentialRampToValueAtTime(volume, t0 + attack);
+    env.gain.exponentialRampToValueAtTime(0.0001, t0 + length);
+    osc.connect(env);
+    env.connect(master);
+    osc.start(t0);
+    osc.stop(t0 + length + 0.05);
+  }
+
+  return {
+    unlock() {
+      if (!S.enabled) return;
+      if (!actx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        actx = new AC();
+        master = actx.createGain();
+        master.gain.value = S.volume;
+        master.connect(actx.destination);
+      }
+      if (actx.state !== 'running') actx.resume();
+    },
+
+    get muted() { return muted; },
+    setMuted(m) {
+      muted = m;
+      if (master) master.gain.value = m ? 0 : S.volume;   // also cuts notes already playing
+    },
+
+    // First tag: pick this object's note (one no other tracked object is
+    // using, if possible) and play it as a short pluck.
+    tag(o) {
+      const taken = slots.filter(s => s && s !== o && s.note !== undefined).map(s => s.note);
+      const base = S.tag.octave * S.scale.length;
+      let choices = [];
+      for (let i = 0; i < S.scale.length; i++) {
+        const n = base + i;
+        if (n !== lastNote && !taken.includes(n)) choices.push(n);
+      }
+      if (!choices.length) choices = [base + Math.floor(Math.random() * S.scale.length)];
+      o.note = choices[Math.floor(Math.random() * choices.length)];
+      lastNote = o.note;
+      if (!live()) return;
+      tone({ freq: noteHz(o.note), type: 'triangle', length: S.tag.length, volume: S.tag.volume });
+    },
+
+    // Turning blue: its note an octave up, as a soft bell (a pure tone plus
+    // a quieter, faster-fading overtone). Spaced out if several land at once.
+    ready(o) {
+      if (!live()) return;
+      const now = actx.currentTime;
+      const at = Math.max(0, nextReadyAt - now);
+      nextReadyAt = now + at + S.minGap;
+      const f = noteHz((o.note ?? 0) + (S.ready.octave - S.tag.octave) * S.scale.length);
+      tone({ freq: f, at, length: S.ready.length, volume: S.ready.volume, attack: 0.01 });
+      tone({ freq: f * 3, at, length: S.ready.length * 0.4, volume: S.ready.volume * 0.25, attack: 0.01 });
+    },
+
+    // Link: a quick rising run up the scale from its note. Longer runs for
+    // rarer objects.
+    link(o) {
+      if (!live()) return;
+      const steps = S.link.notes[o.type] ?? 2;
+      const start = (o.note ?? 0) + (S.link.octave - S.tag.octave) * S.scale.length;
+      for (let i = 0; i < steps; i++) {
+        const f = noteHz(start + i);
+        const last = i === steps - 1;
+        const len = last ? S.link.length * 1.6 : S.link.length;   // the top note rings on
+        tone({ freq: f, type: 'square', at: i * S.link.gap, length: len, volume: S.link.volume * 0.35 });
+        tone({ freq: f, type: 'triangle', at: i * S.link.gap, length: len, volume: S.link.volume });
+      }
+    },
+
+    // Full buffer: a short, dull drop in pitch.
+    full() {
+      if (!live()) return;
+      tone({ freq: S.full.freq, toFreq: S.full.toFreq, type: 'square', length: S.full.length, volume: S.full.volume * 0.5 });
+      tone({ freq: S.full.freq, toFreq: S.full.toFreq, type: 'triangle', length: S.full.length, volume: S.full.volume });
+    },
+
+    // Near-Earth object incoming: high-low beeps for the whole warning lead.
+    warn() {
+      if (!live()) return;
+      const w = S.warn;
+      const pairs = Math.max(1, Math.round(CONFIG.neo.warningLead / (w.beep * 2)));
+      for (let i = 0; i < pairs * 2; i++) {
+        tone({ freq: i % 2 ? w.low : w.high, type: 'square', at: i * w.beep, length: w.beep * 0.85, volume: w.volume });
+      }
+    },
+
+    // Near-Earth object missed: a low note sliding down.
+    miss() {
+      if (!live()) return;
+      const m = S.miss;
+      tone({ freq: m.freq, toFreq: m.toFreq, type: 'sawtooth', length: m.length, volume: m.volume * 0.4, attack: 0.02 });
+      tone({ freq: m.freq, toFreq: m.toFreq, type: 'triangle', length: m.length, volume: m.volume, attack: 0.02 });
+    },
+  };
+})();
 
 
 /* ==========================================================================
@@ -528,6 +688,7 @@ function newStats() {
 }
 
 function startNight(number) {
+  Sound.unlock();
   night = makeNight(number);
   stats = newStats();
   objects = [];
@@ -540,14 +701,14 @@ function startNight(number) {
   titleEl.classList.add('hidden');
   summaryEl.classList.add('hidden');
   pauseEl.classList.add('hidden');
-  pauseBtn.classList.remove('hidden');
+  setHudButtons(true);
 }
 
 function endNight() {
   mode = 'summary';
   objects = [];
   slots.fill(null);
-  pauseBtn.classList.add('hidden');
+  setHudButtons(false);
   showSummary();
 }
 
@@ -557,7 +718,7 @@ function goToTitle() {
   objects = [];
   slots.fill(null);
   pauseEl.classList.add('hidden');
-  pauseBtn.classList.add('hidden');
+  setHudButtons(false);
   summaryEl.classList.add('hidden');
   titleEl.classList.remove('hidden');
 }
@@ -566,14 +727,15 @@ function goToTitle() {
 function pauseGame() {
   if (mode !== 'playing') return;
   mode = 'paused';
-  pauseBtn.classList.add('hidden');
+  setHudButtons(false);
   pauseEl.classList.remove('hidden');
 }
 function resumeGame() {
   if (mode !== 'paused') return;
+  Sound.unlock();          // phones suspend audio in the background; resume on this tap
   mode = 'playing';
   pauseEl.classList.add('hidden');
-  pauseBtn.classList.remove('hidden');
+  setHudButtons(true);
 }
 
 
@@ -783,7 +945,7 @@ function tagObject(o) {
   o.flash = 1;
   if (o.type === 'star') stats.starsTagged++;
   if (hintStage === 0) hintStage = 1;
-  Sound.tag();
+  Sound.tag(o);
 }
 
 function linkObject(o) {
@@ -800,7 +962,7 @@ function linkObject(o) {
   const s = skyToScreen(o.x, o.y);
   popups.push({ x: s.x, y: s.y, text: `+${pts}`, t: 0 });
   if (hintStage === 2) hintStage = 3;
-  Sound.link();
+  Sound.link(o);
 }
 
 // An object left the field. Tagged objects free their slot; real objects
@@ -860,7 +1022,7 @@ function updateObject(o, dt) {
       o.state = 'ready';
       o.flash = 1;
       if (hintStage === 1) hintStage = 2;
-      Sound.ready();
+      Sound.ready(o);
     }
   }
 
@@ -1258,6 +1420,22 @@ function render() {
 const titleEl = document.getElementById('title');
 const pauseEl = document.getElementById('pause');
 const pauseBtn = document.getElementById('pauseBtn');
+const muteBtn = document.getElementById('muteBtn');
+const soundBtn = document.getElementById('soundBtn');
+
+// The pause and mute buttons show only during play.
+function setHudButtons(show) {
+  pauseBtn.classList.toggle('hidden', !show);
+  muteBtn.classList.toggle('hidden', !show);
+}
+
+// In-game mute: the speaker button and the pause-menu toggle do the same thing.
+function setMuted(m) {
+  Sound.setMuted(m);
+  muteBtn.classList.toggle('muted', m);
+  muteBtn.setAttribute('aria-label', m ? 'Unmute' : 'Mute');
+  soundBtn.textContent = m ? 'SOUND: OFF' : 'SOUND: ON';
+}
 const aboutEl = document.getElementById('about');
 const summaryEl = document.getElementById('summary');
 const summaryPanel = document.getElementById('summaryPanel');
@@ -1294,6 +1472,8 @@ titleEl.addEventListener('click', () => {
 
 // Pause menu.
 pauseBtn.addEventListener('click', pauseGame);
+muteBtn.addEventListener('click', () => { Sound.unlock(); setMuted(!Sound.muted); });
+soundBtn.addEventListener('click', () => setMuted(!Sound.muted));
 document.getElementById('resumeBtn').addEventListener('click', resumeGame);
 // Restart abandons the whole run and goes back to the start screen.
 document.getElementById('restartBtn').addEventListener('click', goToTitle);
@@ -1320,6 +1500,7 @@ document.getElementById('aboutClose').addEventListener('click', () => aboutEl.cl
 canvas.addEventListener('pointerdown', e => {
   if (mode !== 'playing') return;
   e.preventDefault();
+  Sound.unlock();          // cheap; wakes audio if the phone suspended it
   handleTap(e.clientX, e.clientY);
 });
 document.addEventListener('contextmenu', e => e.preventDefault());
