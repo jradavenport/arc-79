@@ -201,7 +201,7 @@
     <ul class="rules">
       <li><canvas class="icon" data-icon="tag"></canvas>Tap a moving asteroid</li>
       <li><canvas class="icon" data-icon="wait"></canvas>Wait while it moves</li>
-      <li><canvas class="icon" data-icon="link"></canvas>Tap it again when it's blue</li>
+      <li><canvas class="icon" data-icon="link"></canvas>Tap again when it's blue</li>
       <li><canvas class="icon" data-icon="comet"></canvas>Comets are worth more</li>
       <li><canvas class="icon" data-icon="star"></canvas>Don't tap the stars</li>
     </ul>
@@ -1831,7 +1831,7 @@ function drawBuffer() {
   // How-to hints, until the first link.
   if (CONFIG.showHints && hintStage < 3) {
     // Same words as the start screen.
-    const text = ['Tap a moving asteroid', 'Wait while it moves', "Tap it again when it's blue"][hintStage];
+    const text = ['Tap a moving asteroid', 'Wait while it moves', "Tap again when it's blue"][hintStage];
     ctx.globalAlpha = 0.9;
     ctx.shadowColor = 'rgba(232,236,245,0.5)';
     ctx.shadowBlur = 8;
