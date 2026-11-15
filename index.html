@@ -228,7 +228,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.14';
+const VERSION = 'v0.15';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -241,7 +241,7 @@ document.getElementById('version').textContent = VERSION;
    ========================================================================== */
 const CONFIG = {
   // ---- The night ---------------------------------------------------------
-  nightLength: 79,            // seconds in one night
+  nightLength: 60,            // seconds in one night (was 79, the name's origin; 60 plays better)
   // (the calm opening's length is per night: `quietStart` in the nights table below)
   quietSpawnFactor: 0.2,      // spawn rate during the quiet start, as a fraction of baseline (0.2 × 0.9 ≈ 1 object every 5–6 s)
   firstObjectAt: 1.5,         // a guaranteed main-belt asteroid enters at this time, so there's something to learn on
@@ -249,8 +249,8 @@ const CONFIG = {
   rampLow: 0.8,               // spawn multiplier right after the quiet start
   rampHigh: 1.5,              // spawn multiplier at the end of the night
   rampExponent: 0.7,          // shape of the climb: 1 = straight line, below 1 = climbs early then levels off,
-                              //   above 1 = holds back until late. At 0.7, about half the climb is done by 35 s.
-                              //   Resulting rate: ≈0.7/s at 10 s, 1.0/s at 25 s, 1.1/s at 40 s, 1.2/s at 60 s, 1.35/s at the end
+                              //   above 1 = holds back until late. At 0.7, about half the climb is done by 30 s.
+                              //   Resulting rate on night 1: ≈0.7/s at 10 s, 0.9/s at 20 s, 1.05/s at 30 s, 1.2/s at 45 s, 1.35/s at the end
                               //   (on night 1; later nights multiply this by their `spawn` value below)
 
   // ---- The run: nights back to back until health runs out ----------------
@@ -271,15 +271,18 @@ const CONFIG = {
   //   neoSpeed:    multiplier on near-Earth object speed
   //   warningLead: seconds of warning before each near-Earth object enters
   //   quietStart:  seconds of calm at the start (night 1 needs it to learn; later nights barely pause)
+  //   pairs:       chance that a critical target arrives together with the next one
+  //                (two at once needs two free slots)
   nights: [
-    { neos: 2, isos: 0, spawn: 1.00, neoSpeed: 1.00, warningLead: 1.5, quietStart: 10 },
-    { neos: 4, isos: 0, spawn: 1.30, neoSpeed: 1.12, warningLead: 1.2, quietStart: 3 },
-    { neos: 5, isos: 1, spawn: 1.45, neoSpeed: 1.22, warningLead: 1.0, quietStart: 3 },
+    { neos: 3, isos: 0, spawn: 1.00, neoSpeed: 1.00, warningLead: 1.05, quietStart: 10, pairs: 0 },
+    { neos: 5, isos: 0, spawn: 1.15, neoSpeed: 1.12, warningLead: 0.85, quietStart: 3,  pairs: 0.25 },
+    { neos: 6, isos: 1, spawn: 1.25, neoSpeed: 1.22, warningLead: 0.70, quietStart: 3,  pairs: 0.35 },
   ],
-  afterTable: { neos: 1, isos: 0.4, spawn: 0.10, neoSpeed: 0.07, warningLead: -0.1 },
-  maxNeosPerNight: 8,         // caps, however far a run goes
+  afterTable: { neos: 1, isos: 0.4, spawn: 0.05, neoSpeed: 0.07, warningLead: -0.05, pairs: 0.1 },
+  maxNeosPerNight: 9,         // caps, however far a run goes
   maxIsosPerNight: 3,
-  minWarningLead: 0.6,        // floor on the warning, however far a run goes
+  maxPairs: 0.6,
+  minWarningLead: 0.5,        // floor on the warning, however far a run goes
 
   // ---- Alert buffer ------------------------------------------------------
   bufferSlots: 4,             // how many objects can be tagged at once
@@ -299,7 +302,7 @@ const CONFIG = {
   edgeMargin: 0.04,           // how far past the edge an object must go to count as gone
 
   // ---- Object mix (relative weights for random spawns) ------------------
-  mix: { mainBelt: 0.77, comet: 0.08, star: 0.15 },
+  mix: { mainBelt: 0.70, comet: 0.08, star: 0.22 },
 
   // ---- Object types ------------------------------------------------------
   mainBelt: {
@@ -327,9 +330,9 @@ const CONFIG = {
     minCrossTime: 2.5,        // its path is always on screen at least this long (re-rolled if a path is shorter)
     points: 90,
                               // (how many per night, and their warning, are in `nights` above)
-    windowStart: 45,          // a night's only near-Earth object arrives between windowStart...
-    windowEnd: 70,            // ...and windowEnd (pulled earlier if needed so it can finish crossing before the night ends)
-    multiWindowStart: 18,     // with two or more, the window opens this early instead, so one comes early
+    windowStart: 34,          // a night's only near-Earth object arrives between windowStart...
+    windowEnd: 53,            // ...and windowEnd (pulled earlier if needed so it can finish crossing before the night ends)
+    multiWindowStart: 14,     // with two or more, the window opens this early instead, so one comes early
     minSeparation: 4,         // seconds at least between two arrivals
     endBuffer: 1.5,           // it must be able to finish crossing this many seconds before the night ends
     centerBox: 0.3,           // its path always passes through the middle of the screen (0.3 = middle 40%)
@@ -341,7 +344,7 @@ const CONFIG = {
     speedMax: 0.36,
     arcDistance: 0.20,        // ≈0.55–0.65 s to turn blue
     minCrossTime: 2.5,        // its path is always on screen at least this long
-    warningFactor: 0.7,       // its warning is this fraction of the night's warningLead (0.7 s on night 3)
+    warningFactor: 1.0,       // its warning as a fraction of the night's warningLead (1.0 = same as near-Earth objects)
     points: 180,              // 2× a near-Earth object
     damage: 2,                // health lost if it gets away
     size: 0.012, sizeMinPx: 7, sizeMaxPx: 13,
@@ -361,7 +364,7 @@ const CONFIG = {
   showHints: true,            // short how-to lines above the buffer until the first link
   dawn: {
     enabled: true,            // the sky brightens toward the end of the night
-    duration: 15,             // over the last this-many seconds
+    duration: 12,             // over the last this-many seconds
     starFade: 0.65,           // how much the field stars fade by the end (0 = none, 1 = gone)
   },
   colors: {
@@ -756,12 +759,14 @@ function nightDifficulty(n) {
     const g = CONFIG.afterTable;
     d.neos += g.neos * extra;
     d.isos += g.isos * extra;
+    d.pairs += g.pairs * extra;
     d.spawn += g.spawn * extra;
     d.neoSpeed += g.neoSpeed * extra;
     d.warningLead += g.warningLead * extra;
   }
   d.neos = Math.min(Math.round(d.neos), CONFIG.maxNeosPerNight);
   d.isos = Math.min(d.isos, CONFIG.maxIsosPerNight);
+  d.pairs = Math.min(d.pairs, CONFIG.maxPairs);
   d.warningLead = Math.max(d.warningLead, CONFIG.minWarningLead);
   return d;
 }
@@ -1026,12 +1031,19 @@ function planCriticals(diff, number) {
   for (let i = 0; i < isoCount; i++) {
     types.splice(Math.floor(Math.random() * (types.length + 1)), 0, 'iso');
   }
-  const n = types.length;
+  // Group them: each arrives alone or, with chance `pairs`, together with the
+  // next one (a fraction of a second apart, from their own directions).
+  const groups = [];
+  for (let i = 0; i < types.length; i++) {
+    if (i + 1 < types.length && Math.random() < diff.pairs) { groups.push([types[i], types[i + 1]]); i++; }
+    else groups.push([types[i]]);
+  }
+  const n = groups.length;
   // Slowest possible crossing on this screen shape, corner to corner.
   // (The field can push against it, so take its slowest speed minus the field's.)
   const worstCross = (Math.hypot(1, H / W) + 2 * CONFIG.edgeMargin) / (c.speedMin * diff.neoSpeed - 2 * fieldSpeed());
   const latest = Math.min(c.windowEnd, CONFIG.nightLength - worstCross - c.endBuffer);
-  const first = Math.max(diff.warningLead, n === 1 ? c.windowStart : c.multiWindowStart);
+  const first = Math.max(diff.warningLead, types.length === 1 ? c.windowStart : c.multiWindowStart);
   const start = Math.min(first, latest);
   const slice = (latest - start) / n;
   // On crowded nights the slices get short; shrink the gap rather than pile
@@ -1039,13 +1051,16 @@ function planCriticals(diff, number) {
   const gap = Math.min(c.minSeparation, slice * 0.7);
   const list = [];
   let prev = -Infinity;
-  for (let i = 0; i < n; i++) {
-    let arrive = start + slice * (i + rand(0.15, 0.85));
+  groups.forEach((group, g) => {
+    let arrive = start + slice * (g + rand(0.15, 0.85));
     arrive = Math.min(latest, Math.max(arrive, prev + gap));
     prev = arrive;
-    const lead = diff.warningLead * (types[i] === 'iso' ? CONFIG.iso.warningFactor : 1);
-    list.push({ type: types[i], arrive, lead, warnAt: arrive - lead, path: null, spawned: false });
-  }
+    group.forEach((type, j) => {
+      const at = arrive + (j ? rand(0.15, 0.5) : 0);
+      const lead = diff.warningLead * (type === 'iso' ? CONFIG.iso.warningFactor : 1);
+      list.push({ type, arrive: at, lead, warnAt: at - lead, path: null, spawned: false, paired: group.length > 1 });
+    });
+  });
   return list;
 }
 
@@ -1504,7 +1519,8 @@ function drawNeoWarnings() {
     if (!neo.path || night.t > neo.arrive + 0.4) continue;
     const pad = 22;
     const x = clamp(neo.path.ex * W, pad + safe.left, W - pad - safe.right);
-    const y = clamp(neo.path.ey * W, pad + safe.top, H - pad - safe.bottom);
+    // Keep clear of the timer/score at the top and the buffer at the bottom.
+    const y = clamp(neo.path.ey * W, safe.top + 80, H - safe.bottom - 70);
     const ang = Math.atan2(neo.path.uy, neo.path.ux);
     const pulse = 0.5 + 0.5 * Math.sin(clock * 14);
     ctx.save();
