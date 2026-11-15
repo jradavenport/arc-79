@@ -83,7 +83,11 @@
   .summary td.pts:not(:empty)::before { content: "+"; }
   .caught { color: #00BABC; }
   .missed { opacity: 0.6; }
-  .summary tr.bad { color: #ED4C4C; }   /* Pantone 2348 C (Rubin visual identity) */
+  .summary tr.bad { color: #ED4C4C; }
+  .summary table.spaced { margin-top: 22px; }
+  .health { letter-spacing: 0.15em; }
+  .health .lost { opacity: 0.4; }
+  .restored { font-size: 12px; color: #00BABC; margin-left: 6px; }   /* Pantone 2348 C (Rubin visual identity) */
   button {
     font: inherit;
     font-size: 17px;
@@ -224,7 +228,7 @@
 const CONFIG = {
   // ---- The night ---------------------------------------------------------
   nightLength: 79,            // seconds in one night
-  quietStart: 10,             // length of the calm opening, in seconds
+  // (the calm opening's length is per night: `quietStart` in the nights table below)
   quietSpawnFactor: 0.2,      // spawn rate during the quiet start, as a fraction of baseline (0.2 × 0.9 ≈ 1 object every 5–6 s)
   firstObjectAt: 1.5,         // a guaranteed main-belt asteroid enters at this time, so there's something to learn on
   baseSpawnRate: 0.9,         // baseline objects per second (was 0.7: too quiet mid-night)
@@ -233,6 +237,32 @@ const CONFIG = {
   rampExponent: 0.7,          // shape of the climb: 1 = straight line, below 1 = climbs early then levels off,
                               //   above 1 = holds back until late. At 0.7, about half the climb is done by 35 s.
                               //   Resulting rate: ≈0.7/s at 10 s, 1.0/s at 25 s, 1.1/s at 40 s, 1.2/s at 60 s, 1.35/s at the end
+                              //   (on night 1; later nights multiply this by their `spawn` value below)
+
+  // ---- The run: nights back to back until health runs out ----------------
+  // Target: an average novice reaches game over during night 2 or 3 (~2.5–4 min),
+  // like a classic arcade credit. Only missed near-Earth objects cost health.
+  startHealth: 3,             // health at the start of a run
+  maxHealth: 3,               // health can't be restored above this
+  neoMissDamage: 1,           // health lost per missed near-Earth object
+  cleanNightRestore: 1,       // health restored after a night with no misses
+
+  // Difficulty per night. Night 1 uses the first row, night 2 the second, and
+  // so on. Nights past the end of the table repeat the last row, plus
+  // `afterTable` for each extra night.
+  //   neos:        near-Earth objects that night
+  //   spawn:       multiplier on the whole spawn curve (busier field = fuller buffer)
+  //   neoSpeed:    multiplier on near-Earth object speed
+  //   warningLead: seconds of warning before each near-Earth object enters
+  //   quietStart:  seconds of calm at the start (night 1 needs it to learn; later nights barely pause)
+  nights: [
+    { neos: 1, spawn: 1.00, neoSpeed: 1.00, warningLead: 1.5, quietStart: 10 },
+    { neos: 3, spawn: 1.25, neoSpeed: 1.10, warningLead: 1.2, quietStart: 3 },
+    { neos: 3, spawn: 1.40, neoSpeed: 1.18, warningLead: 1.0, quietStart: 3 },   // + the guaranteed interstellar object
+  ],
+  afterTable: { neos: 1, spawn: 0.10, neoSpeed: 0.05, warningLead: -0.1 },
+  maxNeosPerNight: 6,         // cap, however far a run goes
+  minWarningLead: 0.6,        // floor on the warning, however far a run goes
 
   // ---- Alert buffer ------------------------------------------------------
   bufferSlots: 4,             // how many objects can be tagged at once
@@ -252,7 +282,7 @@ const CONFIG = {
   edgeMargin: 0.04,           // how far past the edge an object must go to count as gone
 
   // ---- Object mix (relative weights for random spawns) ------------------
-  mix: { mainBelt: 0.70, comet: 0.15, star: 0.15 },
+  mix: { mainBelt: 0.77, comet: 0.08, star: 0.15 },
 
   // ---- Object types ------------------------------------------------------
   mainBelt: {
@@ -270,6 +300,8 @@ const CONFIG = {
     points: 30,
     size: 0.005, sizeMinPx: 2.5, sizeMaxPx: 5,  // nucleus radius
     tailDots: 9,              // number of dots in the pixel tail
+    maxOnScreen: 2,           // comets linger (~40 s on screen), so never more than this many at once;
+                              //   a comet spawn over the cap becomes an asteroid instead
   },
   neo: {                      // near-Earth object: the critical target
     speedMin: 0.22,           // crosses a screen width in ≈4.5 s
@@ -277,12 +309,25 @@ const CONFIG = {
     arcDistance: 0.20,        // its own arc distance (overrides the global one): ≈0.7–0.9 s to turn blue
     minCrossTime: 3,          // its path is always on screen at least this long (re-rolled if a path is shorter)
     points: 90,
-    perNight: 1,              // critical targets per night
-    windowStart: 45,          // earliest arrival, seconds into the night
-    windowEnd: 70,            // latest arrival (pulled earlier if needed so it can finish crossing before dawn ends)
-    warningLead: 1.5,         // seconds of warning before it enters
+                              // (how many per night, and their warning, are in `nights` above)
+    windowStart: 45,          // a night's only near-Earth object arrives between windowStart...
+    windowEnd: 70,            // ...and windowEnd (pulled earlier if needed so it can finish crossing before the night ends)
+    multiWindowStart: 18,     // with two or more, the window opens this early instead, so one comes early
+    minSeparation: 4,         // seconds at least between two arrivals
     endBuffer: 1.5,           // it must be able to finish crossing this many seconds before the night ends
     centerBox: 0.3,           // its path always passes through the middle of the screen (0.3 = middle 40%)
+    size: 0.012, sizeMinPx: 7, sizeMaxPx: 13,
+  },
+  iso: {                      // interstellar object: a rarer, faster critical target
+    firstNight: 3,            // never appears before this night
+    alwaysOnFirstNight: true, // every run that reaches firstNight meets one there
+    chancePerNight: 0.4,      // chance of one on each later night (at most one a night)
+    speedMin: 0.30,           // faster than a near-Earth object (also scaled by the night's neoSpeed)
+    speedMax: 0.36,
+    arcDistance: 0.20,        // ≈0.55–0.65 s to turn blue
+    minCrossTime: 3,          // its path is always on screen at least this long
+    points: 180,              // 2× a near-Earth object
+    damage: 2,                // health lost if it gets away
     size: 0.012, sizeMinPx: 7, sizeMaxPx: 13,
   },
   star: {                     // variable star (the decoy): fixed to the star field, never turns blue
@@ -310,6 +355,7 @@ const CONFIG = {
     white: '#e8ecf5',
     yellow: '#FFDB78',       // Pantone 2004 C (Rubin visual identity)
     blue: '#00BABC',         // Rubin Turquoise (Rubin visual identity)
+    red: '#ED4C4C',          // Pantone 2348 C (Rubin visual identity): health lost
   },
 
   // ---- Sound -------------------------------------------------------------
@@ -322,18 +368,21 @@ const CONFIG = {
     enabled: true,            // master switch for all sound
     volume: 0.6,              // master volume, 0 to 1
     key: 72,                  // root note of the scale as a MIDI number (72 = the C above middle C)
+    keyStepPerNight: 5,       // each night moves the key up this many semitones (5 = a fourth: C, F, B♭, E♭...),
+                              //   folded to stay within half an octave of the start. 0 = same key every night.
     scale: [0, 2, 4, 7, 9],   // major pentatonic: semitones above the root (C D E G A)
     tag:   { octave: 0, length: 0.09, volume: 0.30 },   // plucky single note
     ready: { octave: 1, length: 0.9,  volume: 0.18 },   // soft bell, an octave above its tag note
     link:  {
       octave: 0,              // the run starts on the object's own note, in this octave (0 = same as its tag)
-      notes: { mainBelt: 2, comet: 3, neo: 5 },         // length of the rising run, by type
+      notes: { mainBelt: 2, comet: 3, neo: 5, iso: 7 }, // length of the rising run, by type
       gap: 0.065,             // seconds between notes in the run
       length: 0.35,           // how long each note rings
       volume: 0.24,
     },
     full:  { freq: 190, toFreq: 95, length: 0.12, volume: 0.45 },  // dull thud, pitch drops
-    warn:  { high: 988, low: 740, beep: 0.16, volume: 0.16 },      // high-low pairs for the whole warningLead
+    warn:  { high: 988, low: 740, beep: 0.16, volume: 0.16 },      // near-Earth: high-low pairs for the whole warning
+    warnIso: { tones: [1319, 988, 740], beep: 0.11, volume: 0.16 }, // interstellar: falling triplets for the whole warning
     miss:  { freq: 330, toFreq: 110, length: 0.7, volume: 0.30 },  // low downward slide
     minGap: 0.08,             // blue chimes that land together are spaced at least this far apart (seconds)
   },
@@ -358,13 +407,14 @@ const Sound = (() => {
   let muted = false;          // in-game mute (resets when the page reloads)
   let lastNote = -1;          // last tag note, so two tags in a row differ
   let nextReadyAt = 0;        // earliest time the next blue chime may start
+  let keyShift = 0;           // semitones tonight's key sits above S.key
 
   // Note number n counts up the pentatonic scale: 0-4 is the first octave,
   // 5-9 the next, and so on. Turn it into a frequency.
   function noteHz(n) {
     const octave = Math.floor(n / S.scale.length);
     const degree = ((n % S.scale.length) + S.scale.length) % S.scale.length;
-    const midi = S.key + 12 * octave + S.scale[degree];
+    const midi = S.key + keyShift + 12 * octave + S.scale[degree];
     return 440 * Math.pow(2, (midi - 69) / 12);
   }
 
@@ -400,6 +450,12 @@ const Sound = (() => {
         master.connect(actx.destination);
       }
       if (actx.state !== 'running') actx.resume();
+    },
+
+    // Each night is in a different key.
+    setNight(n) {
+      const k = ((n - 1) * S.keyStepPerNight) % 12;
+      keyShift = k > 6 ? k - 12 : k;
     },
 
     get muted() { return muted; },
@@ -460,10 +516,18 @@ const Sound = (() => {
     },
 
     // Near-Earth object incoming: high-low beeps for the whole warning lead.
-    warn() {
+    warn(lead, type) {
       if (!live()) return;
+      if (type === 'iso') {
+        const w = S.warnIso;
+        const count = Math.max(3, Math.round(lead / w.beep));
+        for (let i = 0; i < count; i++) {
+          tone({ freq: w.tones[i % w.tones.length], type: 'square', at: i * w.beep, length: w.beep * 0.8, volume: w.volume });
+        }
+        return;
+      }
       const w = S.warn;
-      const pairs = Math.max(1, Math.round(CONFIG.neo.warningLead / (w.beep * 2)));
+      const pairs = Math.max(1, Math.round(lead / (w.beep * 2)));
       for (let i = 0; i < pairs * 2; i++) {
         tone({ freq: i % 2 ? w.low : w.high, type: 'square', at: i * w.beep, length: w.beep * 0.85, volume: w.volume });
       }
@@ -653,42 +717,80 @@ function updateFieldStars() {
 /* ==========================================================================
    GAME STATE
    ========================================================================== */
-let mode = 'title';        // 'title' | 'playing' | 'summary'
+let mode = 'title';        // 'title' | 'playing' | 'paused' | 'summary' | 'gameover'
 let clock = 0;             // real seconds since page load (for animation)
-let night = null;          // the current night: its clock and its plan
+let run = null;            // the current run: health and totals across nights
+let night = null;          // the current night: its clock, difficulty and plan
 let stats = null;          // what happened this night
 let objects = [];          // everything tappable on screen
 let slots = [];            // the alert buffer: one entry per slot, null or an object
 let popups = [];           // floating "+10" texts
 let banners = [];          // short centre-screen messages
 let pipShake = 0;          // buffer shake after a tap with no free slot (1 → 0)
+let damageFlash = 0;       // red edge flash after losing health (1 → 0)
 let hintStage = 0;         // 0 tag, 1 wait, 2 link, 3 done
 let nextId = 1;
 
-// Later versions will run nights back to back (health, rising difficulty,
-// buffer growth). For now a run is a single night.
+// Difficulty for night n, from CONFIG.nights (and CONFIG.afterTable past its end).
+function nightDifficulty(n) {
+  const table = CONFIG.nights;
+  const d = { ...table[Math.min(n, table.length) - 1] };
+  const extra = n - table.length;
+  if (extra > 0) {
+    const g = CONFIG.afterTable;
+    d.neos += g.neos * extra;
+    d.spawn += g.spawn * extra;
+    d.neoSpeed += g.neoSpeed * extra;
+    d.warningLead += g.warningLead * extra;
+  }
+  d.neos = Math.min(Math.round(d.neos), CONFIG.maxNeosPerNight);
+  d.warningLead = Math.max(d.warningLead, CONFIG.minWarningLead);
+  return d;
+}
+
 function makeNight(number) {
+  const diff = nightDifficulty(number);
   return {
     number,
+    diff,
     t: 0,                  // seconds into the night
     firstSpawned: false,
-    neos: planNeos(),
+    criticals: planCriticals(diff, number),   // near-Earth and interstellar objects, in arrival order
+    gameOverIn: null,      // counts down to the game-over screen once health hits zero
   };
 }
 
 function newStats() {
   return {
     score: 0,
-    linked: { mainBelt: 0, comet: 0, neo: 0 },
+    linked: { mainBelt: 0, comet: 0, neo: 0, iso: 0 },
     lost: 0,               // tagged objects that left the field before linking
     starsTagged: 0,
     neoCaught: 0,
     neoMissed: 0,
+    isoCaught: 0,
+    isoMissed: 0,
+    restored: 0,           // health given back at the end of a clean night
   };
+}
+
+// A run is nights back to back until health runs out.
+function startRun() {
+  run = {
+    health: CONFIG.startHealth,
+    score: 0,              // points from finished nights (the HUD adds the current night)
+    nightsCompleted: 0,
+    neoCaught: 0,
+    neoMissed: 0,
+    isoCaught: 0,
+    isoMissed: 0,
+  };
+  startNight(1);
 }
 
 function startNight(number) {
   Sound.unlock();
+  Sound.setNight(number);
   night = makeNight(number);
   stats = newStats();
   objects = [];
@@ -696,7 +798,9 @@ function startNight(number) {
   popups = [];
   banners = [];
   pipShake = 0;
-  hintStage = 0;
+  damageFlash = 0;
+  hintStage = number === 1 ? 0 : 3;     // how-to hints on the first night only
+  if (number > 1) addBanner(`NIGHT ${number}`, 3);   // no hint of how many critical targets are coming
   mode = 'playing';
   titleEl.classList.add('hidden');
   summaryEl.classList.add('hidden');
@@ -704,7 +808,23 @@ function startNight(number) {
   setHudButtons(true);
 }
 
+// Fold this night's numbers into the run.
+function addNightToRun() {
+  run.score += stats.score;
+  run.neoCaught += stats.neoCaught;
+  run.neoMissed += stats.neoMissed;
+  run.isoCaught += stats.isoCaught;
+  run.isoMissed += stats.isoMissed;
+}
+
+// The night ran its full length: a clean night restores health, then the summary.
 function endNight() {
+  addNightToRun();
+  run.nightsCompleted++;
+  if (stats.neoMissed + stats.isoMissed === 0 && run.health < CONFIG.maxHealth) {
+    stats.restored = Math.min(CONFIG.cleanNightRestore, CONFIG.maxHealth - run.health);
+    run.health += stats.restored;
+  }
   mode = 'summary';
   objects = [];
   slots.fill(null);
@@ -712,9 +832,20 @@ function endNight() {
   showSummary();
 }
 
+// Health ran out.
+function gameOver() {
+  addNightToRun();
+  mode = 'gameover';
+  objects = [];
+  slots.fill(null);
+  setHudButtons(false);
+  showGameOver();
+}
+
 // Back to the start screen, dropping the current run.
 function goToTitle() {
   mode = 'title';
+  run = null;
   objects = [];
   slots.fill(null);
   pauseEl.classList.add('hidden');
@@ -743,12 +874,15 @@ function resumeGame() {
    SPAWNING
    ========================================================================== */
 
-// Spawn rate at time t: quiet opening, then a climb from rampLow to rampHigh.
+// Spawn rate at time t: quiet opening, then a climb from rampLow to rampHigh,
+// all scaled by tonight's difficulty.
 function spawnRate(t) {
   const c = CONFIG;
-  if (t < c.quietStart) return c.baseSpawnRate * c.quietSpawnFactor;
-  const p = clamp((t - c.quietStart) / (c.nightLength - c.quietStart), 0, 1);
-  return c.baseSpawnRate * (c.rampLow + (c.rampHigh - c.rampLow) * Math.pow(p, c.rampExponent));
+  const nightScale = night ? night.diff.spawn : 1;
+  const quiet = night ? night.diff.quietStart : 10;
+  if (t < quiet) return c.baseSpawnRate * c.quietSpawnFactor * nightScale;
+  const p = clamp((t - quiet) / (c.nightLength - quiet), 0, 1);
+  return c.baseSpawnRate * nightScale * (c.rampLow + (c.rampHigh - c.rampLow) * Math.pow(p, c.rampExponent));
 }
 
 // Time for a point at (x, y) moving at (vx, vy) to pass the screen edge plus
@@ -849,7 +983,10 @@ function spawnStar() {
 function spawnRandom() {
   const type = pickWeighted(CONFIG.mix);
   if (type === 'mainBelt') spawnMainBelt();
-  else if (type === 'comet') spawnComet();
+  else if (type === 'comet') {
+    const comets = objects.filter(o => o.type === 'comet' && o.state !== 'linked').length;
+    if (comets < CONFIG.comet.maxOnScreen) spawnComet(); else spawnMainBelt();
+  }
   else if (type === 'star') spawnStar();
 }
 
@@ -859,55 +996,74 @@ function spawnRandom() {
    Arrival times are picked at the start of the night. The path is picked
    when the warning starts, so the warning marker points at the real entry.
    ========================================================================== */
-function planNeos() {
+// Spread tonight's near-Earth objects across their window: one per equal
+// slice of it, at a random point inside each slice, never closer together
+// than minSeparation. With only one, it comes in the back half of the night.
+function planCriticals(diff, number) {
   const c = CONFIG.neo;
+  const types = new Array(diff.neos).fill('neo');
+  // From firstNight on, sometimes one interstellar object joins, at a random place in the order.
+  const iso = CONFIG.iso;
+  const guaranteed = number === iso.firstNight && iso.alwaysOnFirstNight;
+  if (number >= iso.firstNight && (guaranteed || Math.random() < iso.chancePerNight)) {
+    types.splice(Math.floor(Math.random() * (types.length + 1)), 0, 'iso');
+  }
+  const n = types.length;
   // Slowest possible crossing on this screen shape, corner to corner.
   // (The field can push against it, so take its slowest speed minus the field's.)
-  const worstCross = (Math.hypot(1, H / W) + 2 * CONFIG.edgeMargin) / (c.speedMin - 2 * fieldSpeed());
-  const latest = CONFIG.nightLength - worstCross - c.endBuffer;
+  const worstCross = (Math.hypot(1, H / W) + 2 * CONFIG.edgeMargin) / (c.speedMin * diff.neoSpeed - 2 * fieldSpeed());
+  const latest = Math.min(c.windowEnd, CONFIG.nightLength - worstCross - c.endBuffer);
+  const first = Math.max(diff.warningLead, n === 1 ? c.windowStart : c.multiWindowStart);
+  const start = Math.min(first, latest);
+  const slice = (latest - start) / n;
   const list = [];
-  for (let i = 0; i < c.perNight; i++) {
-    const arrive = Math.max(c.warningLead, Math.min(rand(c.windowStart, c.windowEnd), latest));
-    list.push({ arrive, warnAt: arrive - c.warningLead, path: null, spawned: false });
+  let prev = -Infinity;
+  for (let i = 0; i < n; i++) {
+    let arrive = start + slice * (i + rand(0.15, 0.85));
+    arrive = Math.min(latest, Math.max(arrive, prev + c.minSeparation));
+    prev = arrive;
+    list.push({ type: types[i], arrive, warnAt: arrive - diff.warningLead, path: null, spawned: false });
   }
   return list;
 }
 
+const CRITICAL_NAME = { neo: 'NEAR-EARTH OBJECT', iso: 'INTERSTELLAR OBJECT' };
+const isCritical = o => o.type === 'neo' || o.type === 'iso';
+
 // Pick a path through the middle of the screen. Paths shorter than
 // minCrossTime (e.g. straight down a short landscape screen) are re-rolled,
 // so there is always time to tag it, watch it turn blue and link it.
-function planNeoPath(neo) {
-  const c = CONFIG.neo;
+function planCriticalPath(crit) {
+  const c = CONFIG[crit.type];
   let best = null;
   for (let i = 0; i < 40; i++) {
-    const speed = rand(c.speedMin, c.speedMax);
+    const speed = rand(c.speedMin, c.speedMax) * night.diff.neoSpeed;
     const ang = rand(0, TAU);
     const vsx = Math.cos(ang) * speed, vsy = Math.sin(ang) * speed;
-    const path = { vsx, vsy, ...planEntry(vsx, vsy, c.centerBox) };
+    const path = { vsx, vsy, ...planEntry(vsx, vsy, CONFIG.neo.centerBox) };
     if (!best || path.crossTime > best.crossTime) best = path;
     if (path.crossTime >= c.minCrossTime) break;
   }
-  neo.path = best;
+  crit.path = best;
 }
 
-function spawnNeo(neo) {
-  const p = screenToSky(neo.path.ex * W, neo.path.ey * W);
-  const v = screenDirToSky(neo.path.vsx, neo.path.vsy);
-  const o = makeObject('neo', p.x, p.y, v.x, v.y);
-  objects.push(o);
+function spawnCritical(crit) {
+  const p = screenToSky(crit.path.ex * W, crit.path.ey * W);
+  const v = screenDirToSky(crit.path.vsx, crit.path.vsy);
+  objects.push(makeObject(crit.type, p.x, p.y, v.x, v.y));
 }
 
-function updateNeos() {
-  for (const neo of night.neos) {
-    if (!neo.path && night.t >= neo.warnAt) {
-      planNeoPath(neo);
-      Sound.warn();
-      addBanner('NEAR-EARTH OBJECT INBOUND', CONFIG.neo.warningLead + 1.2);
+function updateCriticals() {
+  for (const crit of night.criticals) {
+    if (!crit.path && night.t >= crit.warnAt) {
+      planCriticalPath(crit);
+      Sound.warn(night.diff.warningLead, crit.type);
+      addBanner(`${CRITICAL_NAME[crit.type]} INBOUND`, night.diff.warningLead + 1.2);
     }
-    if (!neo.spawned && night.t >= neo.arrive) {
-      if (!neo.path) planNeoPath(neo);
-      spawnNeo(neo);
-      neo.spawned = true;
+    if (!crit.spawned && night.t >= crit.arrive) {
+      if (!crit.path) planCriticalPath(crit);
+      spawnCritical(crit);
+      crit.spawned = true;
     }
   }
 }
@@ -928,7 +1084,7 @@ function freeSlot(o) {
 }
 
 // Each type's config block, and its points and arc distance (a type can override the global arc).
-const TYPE_CFG = { mainBelt: CONFIG.mainBelt, comet: CONFIG.comet, neo: CONFIG.neo, star: CONFIG.star };
+const TYPE_CFG = { mainBelt: CONFIG.mainBelt, comet: CONFIG.comet, neo: CONFIG.neo, iso: CONFIG.iso, star: CONFIG.star };
 const pointsFor = o => TYPE_CFG[o.type].points;
 const arcFor = o => TYPE_CFG[o.type].arcDistance ?? CONFIG.arcDistance;
 
@@ -955,10 +1111,9 @@ function linkObject(o) {
   const pts = pointsFor(o);
   stats.score += pts;
   if (stats.linked[o.type] !== undefined) stats.linked[o.type]++;
-  if (o.type === 'neo') {
-    stats.neoCaught++;
-    addBanner('NEAR-EARTH OBJECT CATALOGED', 2);
-  }
+  if (o.type === 'neo') stats.neoCaught++;
+  if (o.type === 'iso') stats.isoCaught++;
+  if (isCritical(o)) addBanner(`${CRITICAL_NAME[o.type]} CATALOGED`, 2);
   const s = skyToScreen(o.x, o.y);
   popups.push({ x: s.x, y: s.y, text: `+${pts}`, t: 0 });
   if (hintStage === 2) hintStage = 3;
@@ -972,12 +1127,25 @@ function objectLeft(o) {
     freeSlot(o);
     if (o.type !== 'star') stats.lost++;
   }
-  if (o.type === 'neo' && o.state !== 'linked') {
-    stats.neoMissed++;
-    addBanner('NEAR-EARTH OBJECT MISSED', 2);
+  if (isCritical(o) && o.state !== 'linked') {
+    if (o.type === 'neo') stats.neoMissed++;
+    else stats.isoMissed++;
+    loseHealth(o.type === 'iso' ? CONFIG.iso.damage : CONFIG.neoMissDamage);
+    addBanner(`${CRITICAL_NAME[o.type]} MISSED`, 2);
     Sound.miss();
   }
   o.removed = true;
+}
+
+// Health only drops from missed critical targets. At zero the night stops
+// shortly after (time to see what happened), then the game-over screen.
+function loseHealth(amount) {
+  run.health = Math.max(0, run.health - amount);
+  damageFlash = 1;
+  if (run.health === 0 && night.gameOverIn === null) {
+    night.gameOverIn = 1.4;
+    addBanner('GAME OVER', 2);
+  }
 }
 
 function tapRadiusPx() { return Math.max(CONFIG.tapRadius * W, CONFIG.tapRadiusMinPx); }
@@ -985,6 +1153,7 @@ function tapRadiusPx() { return Math.max(CONFIG.tapRadius * W, CONFIG.tapRadiusM
 // A tap links the nearest blue object in range; failing that it tags the
 // nearest white one. Yellow objects and empty sky ignore taps.
 function handleTap(px, py) {
+  if (night.gameOverIn !== null) return;    // no more play once health is gone
   const r = tapRadiusPx();
   let ready = null, readyD = Infinity, fresh = null, freshD = Infinity;
   for (const o of objects) {
@@ -1057,7 +1226,7 @@ function updateNight(dt) {
     night.firstSpawned = true;
   }
   if (Math.random() < spawnRate(night.t) * dt) spawnRandom();
-  updateNeos();
+  updateCriticals();
 
   for (const o of objects) updateObject(o, dt);
   objects = objects.filter(o => !o.removed);
@@ -1067,8 +1236,14 @@ function updateNight(dt) {
   for (const b of banners) b.t += dt;
   banners = banners.filter(b => b.t < b.dur);
   pipShake = Math.max(0, pipShake - dt * 2.5);
+  damageFlash = Math.max(0, damageFlash - dt * 1.5);
 
-  if (night.t >= CONFIG.nightLength) endNight();
+  if (night.gameOverIn !== null) {
+    night.gameOverIn -= dt;
+    if (night.gameOverIn <= 0) gameOver();
+  } else if (night.t >= CONFIG.nightLength) {
+    endNight();
+  }
 }
 
 function addBanner(text, dur) {
@@ -1215,6 +1390,35 @@ function drawNeo(o, s, r, col) {
   ctx.fillText('NEO', s.x, s.y - b - 4);
 }
 
+function drawIso(o, s, r, col) {
+  // Long, thin cigar shape pointing along its path, inside a turning dashed
+  // ring, labelled. Different enough from the near-Earth object to read at a glance.
+  const d = skyDirToScreen(o.vx, o.vy);
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  ctx.fillStyle = col;
+  ctx.strokeStyle = col;
+  ctx.save();
+  ctx.rotate(Math.atan2(d.y, d.x));
+  ctx.beginPath();
+  ctx.ellipse(0, 0, r * 1.5, r * 0.45, 0, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+  const ring = r * (2.3 + 0.2 * Math.sin(clock * 12));
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 5]);
+  ctx.lineDashOffset = -clock * 30;
+  ctx.beginPath();
+  ctx.arc(0, 0, ring, 0, TAU);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = font(10, 700);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('ISO', 0, -ring - 4);
+  ctx.restore();
+}
+
 function drawStar(o, s, r, col) {
   // Flickering point with small diffraction spikes.
   const f = 0.5 + 0.3 * Math.sin(clock * TAU / o.flickerPeriod + o.flickerPhase)
@@ -1247,6 +1451,7 @@ function drawObject(o) {
   if (o.type === 'mainBelt') drawMainBelt(o, s, r, col);
   else if (o.type === 'comet') drawComet(o, s, r, col);
   else if (o.type === 'neo') drawNeo(o, s, r, col);
+  else if (o.type === 'iso') drawIso(o, s, r, col);
   else if (o.type === 'star') drawStar(o, s, r, col);
   ctx.restore();
 
@@ -1273,7 +1478,7 @@ function drawObject(o) {
 
 // Pulsing arrow at the screen edge where the near-Earth object will enter.
 function drawNeoWarnings() {
-  for (const neo of night.neos) {
+  for (const neo of night.criticals) {
     if (!neo.path || night.t > neo.arrive + 0.4) continue;
     const pad = 22;
     const x = clamp(neo.path.ex * W, pad + safe.left, W - pad - safe.right);
@@ -1343,7 +1548,10 @@ function drawHud() {
   ctx.fillText('SCORE', W - safe.right - 16, top);
   ctx.globalAlpha = 1;
   ctx.font = font(big, 700);
-  ctx.fillText(String(stats.score), W - safe.right - 16, top + 15);
+  ctx.fillText(String(run.score + stats.score), W - safe.right - 16, top + 15);
+
+  // Under the score: health, as diamonds (the near-Earth object's shape).
+  drawHealth(W - safe.right - 16, top + 15 + big + 12);
 
   // Centre: banners.
   ctx.textAlign = 'center';
@@ -1359,6 +1567,49 @@ function drawHud() {
   ctx.restore();
 
   drawBuffer();
+}
+
+// Health pips, right-aligned to x. Lost health is an outline; the pip just
+// lost flashes red.
+function drawHealth(xRight, y) {
+  const r = 5, gap = 15;
+  ctx.save();
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < CONFIG.maxHealth; i++) {
+    const x = xRight - r - (CONFIG.maxHealth - 1 - i) * gap;
+    const full = i < run.health;
+    const justLost = i === run.health && damageFlash > 0;
+    ctx.beginPath();
+    ctx.moveTo(x, y - r); ctx.lineTo(x + r * 0.75, y);
+    ctx.lineTo(x, y + r); ctx.lineTo(x - r * 0.75, y);
+    ctx.closePath();
+    if (full) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = C.white;
+      ctx.shadowColor = C.white;
+      ctx.shadowBlur = 6;
+      ctx.fill();
+    } else {
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = justLost ? 0.4 + 0.6 * damageFlash : 0.4;
+      ctx.strokeStyle = justLost ? C.red : C.white;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// Red glow around the screen edge when health is lost.
+function drawDamageFlash() {
+  if (damageFlash <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = damageFlash * 0.7;
+  ctx.strokeStyle = C.red;
+  ctx.shadowColor = C.red;
+  ctx.shadowBlur = 40;
+  ctx.lineWidth = 14;
+  ctx.strokeRect(0, 0, W, H);
+  ctx.restore();
 }
 
 // The alert buffer: a row of pips near the bottom.
@@ -1410,6 +1661,7 @@ function render() {
   for (const o of objects) drawObject(o);
   drawNeoWarnings();
   drawPopups();
+  drawDamageFlash();
   drawHud();
 }
 
@@ -1440,34 +1692,82 @@ const aboutEl = document.getElementById('about');
 const summaryEl = document.getElementById('summary');
 const summaryPanel = document.getElementById('summaryPanel');
 
+// Health as diamonds for the HTML screens: filled for health left.
+function healthHtml() {
+  let h = '';
+  for (let i = 0; i < CONFIG.maxHealth; i++) h += i < run.health ? '◆' : '<span class="lost">◇</span>';
+  return `<span class="health">${h}</span>`;
+}
+
+// Shared bottom of both screens: the main button, then the About link.
+// The button waits a moment so a frantic last tap doesn't skip the screen.
+function screenButton(label, onClick) {
+  return {
+    html: `<button id="nextBtn" disabled>${label}</button><br><a class="about-link" data-about>ABOUT</a>`,
+    wire() {
+      const btn = document.getElementById('nextBtn');
+      setTimeout(() => { btn.disabled = false; }, 800);
+      btn.addEventListener('click', onClick);
+    },
+  };
+}
+
+// End of a night that was survived.
 function showSummary() {
   const s = stats;
-  const total = night.neos.length;
-  const critical = s.neoCaught > 0
-    ? `<span class="caught">caught</span>`
-    : `<span class="missed">missed</span>`;
+  // "caught" / "missed" for a single one, "2 / 3" for several.
+  const tally = (caught, total) => total === 1
+    ? (caught ? `<span class="caught">caught</span>` : `<span class="missed">missed</span>`)
+    : `${caught} / ${total}`;
+  const total = night.criticals.filter(c => c.type === 'neo').length;
+  const isoTotal = night.criticals.filter(c => c.type === 'iso').length;
+  const critical = tally(s.neoCaught, total);
+  const isoRow = isoTotal
+    ? `<tr><td>Interstellar object</td><td class="n">${tally(s.isoCaught, isoTotal)}</td><td class="pts">${s.linked.iso * CONFIG.iso.points}</td></tr>`
+    : '';
+  const next = screenButton('CONTINUE', () => startNight(night.number + 1));
   summaryPanel.innerHTML = `
     <div class="label">NIGHT ${night.number} COMPLETE</div>
     <div class="score">${s.score}</div>
     <table>
       <tr><td>Asteroids linked</td><td class="n">${s.linked.mainBelt}</td><td class="pts">${s.linked.mainBelt * CONFIG.mainBelt.points}</td></tr>
       <tr><td>Comets linked</td><td class="n">${s.linked.comet}</td><td class="pts">${s.linked.comet * CONFIG.comet.points}</td></tr>
-      <tr><td>Near-Earth object</td><td class="n">${total === 1 ? critical : `${s.neoCaught} / ${total}`}</td><td class="pts">${s.linked.neo * CONFIG.neo.points}</td></tr>
+      <tr><td>Near-Earth object${total === 1 ? '' : 's'}</td><td class="n">${critical}</td><td class="pts">${s.linked.neo * CONFIG.neo.points}</td></tr>
+      ${isoRow}
       <tr class="gap bad"><td>Lost arcs</td><td class="n">${s.lost}</td></tr>
       <tr class="bad"><td>Stars tagged</td><td class="n">${s.starsTagged}</td></tr>
+      <tr class="gap"><td>Health${s.restored ? ` <span class="restored">+${s.restored} clean night</span>` : ''}</td><td class="n">${healthHtml()}</td></tr>
+      <tr><td>Total score</td><td class="n">${run.score}</td></tr>
     </table>
-    <button id="again" disabled>PLAY AGAIN</button>
-    <br><a class="about-link" data-about>ABOUT</a>`;
+    ${next.html}`;
   summaryEl.classList.remove('hidden');
-  // Short delay so a frantic last tap doesn't skip the summary.
-  const btn = document.getElementById('again');
-  setTimeout(() => { btn.disabled = false; }, 800);
-  btn.addEventListener('click', () => startNight(1));
+  next.wire();
+}
+
+// Health ran out.
+function showGameOver() {
+  const survived = run.nightsCompleted;
+  const again = screenButton('PLAY AGAIN', startRun);
+  summaryPanel.innerHTML = `
+    <div class="label">GAME OVER</div>
+    <div class="score">${survived}</div>
+    <div class="label">NIGHT${survived === 1 ? '' : 'S'} CATALOGED</div>
+    <table class="spaced">
+      <tr><td>Points</td><td class="n">${run.score}</td></tr>
+      <tr><td>Near-Earth objects caught</td><td class="n">${run.neoCaught}</td></tr>
+      <tr class="bad"><td>Near-Earth objects missed</td><td class="n">${run.neoMissed}</td></tr>
+      ${run.isoCaught + run.isoMissed ? `
+      <tr><td>Interstellar objects caught</td><td class="n">${run.isoCaught}</td></tr>
+      <tr class="bad"><td>Interstellar objects missed</td><td class="n">${run.isoMissed}</td></tr>` : ''}
+    </table>
+    ${again.html}`;
+  summaryEl.classList.remove('hidden');
+  again.wire();
 }
 
 titleEl.addEventListener('click', () => {
   Sound.unlock();
-  startNight(1);
+  startRun();
 });
 
 // Pause menu.
