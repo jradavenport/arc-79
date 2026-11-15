@@ -255,7 +255,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.25';
+const VERSION = 'v0.26';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -422,17 +422,18 @@ const CONFIG = {
     ready: { octave: 1, length: 0.9,  volume: 0.18 },   // soft bell, an octave above its tag note
     link:  {
       octave: 0,              // the run starts on the object's own note, in this octave (0 = same as its tag)
-      notes: { mainBelt: 2, comet: 3, neo: 5, iso: 7 }, // length of the rising run, by type
+      notes: { mainBelt: 2, comet: 3 },                 // length of the rising run, by type
       gap: 0.065,             // seconds between notes in the run
       length: 0.35,           // how long each note rings
       volume: 0.24,
-      // Critical catches land on a chord after the run, built on tonight's key:
-      // semitones above the root. Major 7th for near-Earth, major 9th for
-      // interstellar. (Avoid 10 = dominant 7th: it sounds unresolved.)
+      // Critical catches play their chord as the run itself: the chord's notes
+      // rise one by one (same speed as a normal run) and ring on, stacking
+      // into the chord. One gesture, not a run plus a chord. Semitones above
+      // tonight's root: major 7th for near-Earth, major 9th for interstellar.
+      // (Avoid 10 = dominant 7th: it sounds unresolved.)
       chords: { neo: [0, 4, 7, 11], iso: [0, 4, 7, 11, 14] },
-      chordLength: { neo: 1.4, iso: 2.0 },  // seconds the chord rings
-      chordVolume: 0.11,      // per note (several play at once)
-      strum: 0.03,            // seconds between chord notes, low to high
+      chordLength: { neo: 1.2, iso: 1.6 },  // seconds each note rings
+      chordVolume: 0.15,      // per note (they overlap)
     },
     nightEnd: {               // a night survived: a slow rolled chord in tonight's key
       chord: [-12, -5, 0, 4, 7, 11, 14, 19],   // semitones from the root, low to high (an open major 9th)
@@ -587,6 +588,19 @@ const Sound = (() => {
     // rarer objects.
     link(o) {
       if (!live()) return;
+      // Critical targets: the chord, rolled upward (see CONFIG.sound.link.chords).
+      const chord = S.link.chords[o.type];
+      if (chord) {
+        const len = S.link.chordLength[o.type];
+        chord.forEach((semi, i) => {
+          const f = 440 * Math.pow(2, (S.key + keyShift + semi - 69) / 12);
+          const at = i * S.link.gap;
+          tone({ freq: f, type: 'square', at, length: len, volume: S.link.chordVolume * 0.3 });
+          tone({ freq: f, type: 'triangle', at, length: len, volume: S.link.chordVolume });
+        });
+        return;
+      }
+      // Everything else: a quick pentatonic run up from the object's own note.
       const steps = S.link.notes[o.type] ?? 2;
       const start = (o.note ?? 0) + (S.link.octave - S.tag.octave) * S.scale.length;
       for (let i = 0; i < steps; i++) {
@@ -595,17 +609,6 @@ const Sound = (() => {
         const len = last ? S.link.length * 1.6 : S.link.length;   // the top note rings on
         tone({ freq: f, type: 'square', at: i * S.link.gap, length: len, volume: S.link.volume * 0.35 });
         tone({ freq: f, type: 'triangle', at: i * S.link.gap, length: len, volume: S.link.volume });
-      }
-      // Critical targets: a soft, slightly strummed chord after the run.
-      const chord = S.link.chords[o.type];
-      if (chord) {
-        const at = steps * S.link.gap;
-        const len = S.link.chordLength[o.type];
-        chord.forEach((semi, i) => {
-          const f = 440 * Math.pow(2, (S.key + keyShift + semi - 69) / 12);
-          tone({ freq: f, type: 'triangle', at: at + i * S.link.strum, length: len, volume: S.link.chordVolume, attack: 0.02 });
-          tone({ freq: f, at: at + i * S.link.strum, length: len, volume: S.link.chordVolume * 0.6, attack: 0.02 });
-        });
       }
     },
 
