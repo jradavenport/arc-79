@@ -56,14 +56,14 @@
   .overlay.hidden { display: none; }
   .panel { width: 100%; max-width: 400px; text-align: center; }
   h1 {
-    margin: 0;
+    margin: 0 0 28px;
     font-size: clamp(44px, 14vw, 76px);
     letter-spacing: 0.14em;
     font-weight: 700;
     text-shadow: 0 0 18px rgba(232, 236, 245, 0.45);
   }
   .sub { margin: 4px 0 28px; opacity: 0.6; font-size: 14px; letter-spacing: 0.08em; }
-  .rules { list-style: none; padding: 0; margin: 0 auto 18px; text-align: left; display: inline-block; font-size: 15px; line-height: 1.5; }
+  .rules { list-style: none; padding: 0; margin: 0 auto 36px; text-align: left; display: inline-block; font-size: 15px; line-height: 1.5; }
   .rules li { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
   .dot { flex: none; width: 12px; height: 12px; border-radius: 50%; }
   .dot.white  { background: #e8ecf5; box-shadow: 0 0 8px #e8ecf5; }
@@ -107,13 +107,11 @@
 <div id="title" class="overlay">
   <div class="panel">
     <h1>ARC-79</h1>
-    <p class="sub">one night · 79 seconds</p>
     <ul class="rules">
       <li><span class="dot white"></span>Tap a moving object to tag it</li>
       <li><span class="dot yellow"></span>Wait while it traces an arc</li>
       <li><span class="dot blue"></span>Tap it again to link it</li>
     </ul>
-    <p class="note">You can track 4 objects at once.<br>Stars that flicker never move.<br>Save a slot for the near-Earth object.</p>
     <div class="cta">TAP TO START</div>
   </div>
 </div>
@@ -139,12 +137,14 @@ const CONFIG = {
   // ---- The night ---------------------------------------------------------
   nightLength: 79,            // seconds in one night
   quietStart: 10,             // length of the calm opening, in seconds
-  quietSpawnFactor: 0.25,     // spawn rate during the quiet start, as a fraction of baseline
+  quietSpawnFactor: 0.2,      // spawn rate during the quiet start, as a fraction of baseline (0.2 × 0.9 ≈ 1 object every 5–6 s)
   firstObjectAt: 1.5,         // a guaranteed main-belt asteroid enters at this time, so there's something to learn on
-  baseSpawnRate: 0.7,         // baseline objects per second
-  rampLow: 0.6,               // spawn multiplier right after the quiet start
-  rampHigh: 1.3,              // spawn multiplier at the end of the night
-  rampExponent: 2.5,          // shape of the climb: 1 = straight line, higher = more of it late (2.5 puts ~64% in the last third)
+  baseSpawnRate: 0.9,         // baseline objects per second (was 0.7: too quiet mid-night)
+  rampLow: 0.8,               // spawn multiplier right after the quiet start
+  rampHigh: 1.5,              // spawn multiplier at the end of the night
+  rampExponent: 0.7,          // shape of the climb: 1 = straight line, below 1 = climbs early then levels off,
+                              //   above 1 = holds back until late. At 0.7, about half the climb is done by 35 s.
+                              //   Resulting rate: ≈0.7/s at 10 s, 1.0/s at 25 s, 1.1/s at 40 s, 1.2/s at 60 s, 1.35/s at the end
 
   // ---- Alert buffer ------------------------------------------------------
   bufferSlots: 4,             // how many objects can be tagged at once
@@ -1167,7 +1167,7 @@ function showSummary() {
     <div class="label">NIGHT ${night.number} COMPLETE</div>
     <div class="score">${s.score}</div>
     <table>
-      <tr><td>Main belt linked</td><td class="n">${s.linked.mainBelt}</td><td class="pts">${s.linked.mainBelt * CONFIG.mainBelt.points}</td></tr>
+      <tr><td>Asteroids linked</td><td class="n">${s.linked.mainBelt}</td><td class="pts">${s.linked.mainBelt * CONFIG.mainBelt.points}</td></tr>
       <tr><td>Comets linked</td><td class="n">${s.linked.comet}</td><td class="pts">${s.linked.comet * CONFIG.comet.points}</td></tr>
       <tr><td>Near-Earth object</td><td class="n">${total === 1 ? critical : `${s.neoCaught} / ${total}`}</td><td class="pts">${s.linked.neo * CONFIG.neo.points}</td></tr>
       <tr class="gap bad"><td>Lost arcs</td><td class="n">${s.lost}</td></tr>
