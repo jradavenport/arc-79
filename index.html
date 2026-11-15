@@ -1,0 +1,1225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#03050b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Arc-79</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #03050b;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  body {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #e8ecf5;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+  }
+  /* Invisible element used to read the phone's safe-area insets (notch, home bar). */
+  #safe {
+    position: fixed;
+    visibility: hidden;
+    pointer-events: none;
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+             env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+
+  /* ---- Start and summary screens ---- */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    padding: calc(24px + env(safe-area-inset-top, 0px)) 16px calc(24px + env(safe-area-inset-bottom, 0px));
+    background: rgba(3, 5, 11, 0.55);
+    touch-action: manipulation;
+    cursor: pointer;
+  }
+  .overlay.hidden { display: none; }
+  .panel { width: 100%; max-width: 400px; text-align: center; }
+  h1 {
+    margin: 0;
+    font-size: clamp(44px, 14vw, 76px);
+    letter-spacing: 0.14em;
+    font-weight: 700;
+    text-shadow: 0 0 18px rgba(232, 236, 245, 0.45);
+  }
+  .sub { margin: 4px 0 28px; opacity: 0.6; font-size: 14px; letter-spacing: 0.08em; }
+  .rules { list-style: none; padding: 0; margin: 0 auto 18px; text-align: left; display: inline-block; font-size: 15px; line-height: 1.5; }
+  .rules li { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+  .dot { flex: none; width: 12px; height: 12px; border-radius: 50%; }
+  .dot.white  { background: #e8ecf5; box-shadow: 0 0 8px #e8ecf5; }
+  .dot.yellow { background: #FFDB78; box-shadow: 0 0 8px #FFDB78; }
+  .dot.blue   { background: #00BABC; box-shadow: 0 0 8px #00BABC; }
+  .note { font-size: 13px; opacity: 0.6; line-height: 1.5; margin: 0 0 30px; }
+  .cta { font-size: 18px; letter-spacing: 0.2em; animation: blink 1.4s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: 0.25; } }
+
+  .summary .label { font-size: 13px; letter-spacing: 0.2em; opacity: 0.6; }
+  .summary .score { font-size: clamp(48px, 16vw, 80px); font-weight: 700; margin: 4px 0 20px; text-shadow: 0 0 18px rgba(0, 186, 188, 0.5); color: #00BABC; }
+  .summary table { margin: 0 auto 28px; border-collapse: collapse; font-size: 15px; }
+  .summary td { padding: 5px 10px; text-align: left; }
+  .summary td.n { text-align: right; font-weight: 700; }
+  .summary tr.gap td { padding-top: 14px; }
+  .summary td.pts { text-align: right; opacity: 0.5; }
+  .summary td.pts:not(:empty)::before { content: "+"; }
+  .caught { color: #00BABC; }
+  .missed { opacity: 0.6; }
+  .summary tr.bad { color: #ED4C4C; }   /* Pantone 2348 C (Rubin visual identity) */
+  button {
+    font: inherit;
+    font-size: 17px;
+    letter-spacing: 0.2em;
+    color: #03050b;
+    background: #e8ecf5;
+    border: 0;
+    border-radius: 6px;
+    padding: 14px 28px;
+    cursor: pointer;
+    box-shadow: 0 0 16px rgba(232, 236, 245, 0.35);
+    touch-action: manipulation;
+  }
+  button:disabled { opacity: 0.3; }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+<div id="safe"></div>
+
+<div id="title" class="overlay">
+  <div class="panel">
+    <h1>ARC-79</h1>
+    <p class="sub">one night · 79 seconds</p>
+    <ul class="rules">
+      <li><span class="dot white"></span>Tap a moving object to tag it</li>
+      <li><span class="dot yellow"></span>Wait while it traces an arc</li>
+      <li><span class="dot blue"></span>Tap it again to link it</li>
+    </ul>
+    <p class="note">You can track 4 objects at once.<br>Stars that flicker never move.<br>Save a slot for the near-Earth object.</p>
+    <div class="cta">TAP TO START</div>
+  </div>
+</div>
+
+<div id="summary" class="overlay hidden" style="cursor:default">
+  <div class="panel summary" id="summaryPanel"></div>
+</div>
+
+<noscript><p style="padding:24px">Arc-79 needs JavaScript.</p></noscript>
+
+<script>
+'use strict';
+
+/* ==========================================================================
+   CONFIG: every tunable number lives here.
+
+   Units: distances and speeds are in SCREEN WIDTHS (1.0 = the full width of
+   the window), so a phone and a desktop play alike. Speeds are screen widths
+   per second, measured against the star field (not the screen). Times are in
+   seconds.
+   ========================================================================== */
+const CONFIG = {
+  // ---- The night ---------------------------------------------------------
+  nightLength: 79,            // seconds in one night
+  quietStart: 10,             // length of the calm opening, in seconds
+  quietSpawnFactor: 0.25,     // spawn rate during the quiet start, as a fraction of baseline
+  firstObjectAt: 1.5,         // a guaranteed main-belt asteroid enters at this time, so there's something to learn on
+  baseSpawnRate: 0.7,         // baseline objects per second
+  rampLow: 0.6,               // spawn multiplier right after the quiet start
+  rampHigh: 1.3,              // spawn multiplier at the end of the night
+  rampExponent: 2.5,          // shape of the climb: 1 = straight line, higher = more of it late (2.5 puts ~64% in the last third)
+
+  // ---- Alert buffer ------------------------------------------------------
+  bufferSlots: 4,             // how many objects can be tagged at once
+
+  // ---- Star field --------------------------------------------------------
+  scrollTime: 40,             // seconds for a star at mid-screen to cross the screen, left to right
+  fieldPivotBelow: 1.2,       // the field turns around a pole this far below the bottom edge, in screen widths.
+                              //   Smaller = tighter arcs and a bigger speed difference top to bottom.
+                              //   Set to a large number (e.g. 100) for a nearly straight scroll.
+  starDensity: 170,           // background field stars per (screen width)²
+  maxStars: 600,              // cap for very tall screens
+
+  // ---- Core rule ---------------------------------------------------------
+  arcDistance: 0.10,          // how far a tagged object must move against the stars to turn blue
+  tapRadius: 0.05,            // tap forgiveness, as a fraction of screen width...
+  tapRadiusMinPx: 24,         // ...but never smaller than this many pixels
+  edgeMargin: 0.04,           // how far past the edge an object must go to count as gone
+
+  // ---- Object mix (relative weights for random spawns) ------------------
+  mix: { mainBelt: 0.70, comet: 0.15, star: 0.15 },
+
+  // ---- Object types ------------------------------------------------------
+  mainBelt: {
+    speedMin: 0.035,          // slowest (≈2.9 s wait with arcDistance 0.10)
+    speedMax: 0.067,          // fastest (≈1.5 s wait)
+    curveChance: 0.4,         // share of asteroids that follow a curved (quadratic) path
+    curveMax: 0.03,           // strongest sideways pull, as a fraction of speed per second
+    points: 10,
+    size: 0.011, sizeMinPx: 7, sizeMaxPx: 14,   // drawn radius: fraction of width, clamped to pixels
+  },
+  comet: {
+    speedMin: 0.0125,         // slowest (≈8 s wait)
+    speedMax: 0.02,           // fastest (≈5 s wait)
+    points: 30,
+    size: 0.005, sizeMinPx: 2.5, sizeMaxPx: 5,  // nucleus radius
+    tailDots: 9,              // number of dots in the pixel tail
+  },
+  neo: {                      // near-Earth object: the critical target
+    speedMin: 0.22,           // crosses a screen width in ≈4.5 s
+    speedMax: 0.28,
+    arcDistance: 0.20,        // its own arc distance (overrides the global one): ≈0.7–0.9 s to turn blue
+    minCrossTime: 3,          // its path is always on screen at least this long (re-rolled if a path is shorter)
+    points: 90,
+    perNight: 1,              // critical targets per night
+    windowStart: 45,          // earliest arrival, seconds into the night
+    windowEnd: 70,            // latest arrival (pulled earlier if needed so it can finish crossing before dawn ends)
+    warningLead: 1.5,         // seconds of warning before it enters
+    endBuffer: 1.5,           // it must be able to finish crossing this many seconds before the night ends
+    centerBox: 0.3,           // its path always passes through the middle of the screen (0.3 = middle 40%)
+    size: 0.012, sizeMinPx: 7, sizeMaxPx: 13,
+  },
+  star: {                     // variable star (the decoy): fixed to the star field, never turns blue
+    clearTime: 20,            // seconds after tagging before it turns white again and frees its slot
+    points: 0,
+    flickerPeriodMin: 0.5,    // seconds per flicker, fastest
+    flickerPeriodMax: 1.4,    // slowest
+    fadeIn: 0.8,              // seconds to brighten into view
+    size: 0.005, sizeMinPx: 2.5, sizeMaxPx: 4.5,
+  },
+
+  // ---- Look --------------------------------------------------------------
+  linkFadeTime: 0.7,          // seconds a linked object takes to fade out
+  showArcTrail: true,         // dotted line from the tag point to a tagged object, plus a progress ring
+  showHints: true,            // short how-to lines above the buffer until the first link
+  dawn: {
+    enabled: true,            // the sky brightens toward the end of the night
+    duration: 15,             // over the last this-many seconds
+    starFade: 0.65,           // how much the field stars fade by the end (0 = none, 1 = gone)
+  },
+  colors: {
+    sky: '#03050b',
+    dawnSky: '#1d2742',
+    fieldStar: '#cfd8ff',
+    white: '#e8ecf5',
+    yellow: '#FFDB78',       // Pantone 2004 C (Rubin visual identity)
+    blue: '#00BABC',         // Rubin Turquoise (Rubin visual identity)
+  },
+
+  // ---- Debug -------------------------------------------------------------
+  debugTapRadius: false,      // draw the tap area around every object
+};
+
+
+/* ==========================================================================
+   SOUND HOOKS
+   Silent in the base version. Each hook is already called at the right
+   moment, so adding sound later means filling these in with Web Audio.
+   unlock() is called from the "tap to start" tap, which is where browsers
+   allow an AudioContext to be created.
+   ========================================================================== */
+const Sound = {
+  unlock() {},
+  tag() {},        // first tag: a short blip
+  ready() {},      // turning blue: a soft chime
+  link() {},       // link: the main reward
+  full() {},       // tap with a full buffer: a dull thud
+  warn() {},       // critical target incoming
+  miss() {},       // critical target missed: a low note
+};
+
+
+/* ==========================================================================
+   HELPERS
+   ========================================================================== */
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+function pickWeighted(weights) {
+  let total = 0;
+  for (const k in weights) total += weights[k];
+  let r = Math.random() * total;
+  for (const k in weights) {
+    r -= weights[k];
+    if (r <= 0) return k;
+  }
+  return Object.keys(weights)[0];
+}
+
+function hexToRgb(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function mixHex(a, b, t) {
+  const A = hexToRgb(a), B = hexToRgb(b);
+  return `rgb(${Math.round(A[0] + (B[0] - A[0]) * t)},${Math.round(A[1] + (B[1] - A[1]) * t)},${Math.round(A[2] + (B[2] - A[2]) * t)})`;
+}
+
+// A drawn size from a type's config: fraction of width, clamped to pixels.
+function sizePx(cfg) { return clamp(cfg.size * W, cfg.sizeMinPx, cfg.sizeMaxPx); }
+
+function font(px, weight = 600) {
+  return `${weight} ${px}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+}
+
+
+/* ==========================================================================
+   CANVAS AND SCREEN SIZE
+   ========================================================================== */
+const canvas = document.getElementById('sky');
+const ctx = canvas.getContext('2d');
+const safeProbe = document.getElementById('safe');
+
+let W = 0, H = 0, DPR = 1;                       // CSS pixel size of the window
+const safe = { top: 0, right: 0, bottom: 0, left: 0 }; // phone notch / home-bar insets
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  const cs = getComputedStyle(safeProbe);
+  safe.top = parseFloat(cs.paddingTop) || 0;
+  safe.right = parseFloat(cs.paddingRight) || 0;
+  safe.bottom = parseFloat(cs.paddingBottom) || 0;
+  safe.left = parseFloat(cs.paddingLeft) || 0;
+
+  seedFieldStars();
+}
+
+
+/* ==========================================================================
+   SKY COORDINATES AND CAMERA
+   Everything (stars, objects, tag points) lives in fixed sky coordinates,
+   measured in screen widths. The camera slides and turns slowly across the
+   sky, which is what makes the field scroll. Because tag points are stored
+   in sky coordinates, "distance moved since tagging" is automatically
+   measured against the stars, not the screen.
+   ========================================================================== */
+const cam = { x: 0, y: 0, a: 0 };   // sky position at the screen centre, and turn angle
+
+function skyToScreen(x, y) {
+  const dx = x - cam.x, dy = y - cam.y;
+  const c = Math.cos(cam.a), s = Math.sin(cam.a);
+  return { x: W / 2 + (c * dx + s * dy) * W, y: H / 2 + (-s * dx + c * dy) * W };
+}
+function screenToSky(px, py) {
+  const rx = (px - W / 2) / W, ry = (py - H / 2) / W;
+  const c = Math.cos(cam.a), s = Math.sin(cam.a);
+  return { x: cam.x + c * rx - s * ry, y: cam.y + s * rx + c * ry };
+}
+// Turn a direction expressed in screen orientation into sky orientation, and back.
+function screenDirToSky(ux, uy) {
+  const c = Math.cos(cam.a), s = Math.sin(cam.a);
+  return { x: c * ux - s * uy, y: s * ux + c * uy };
+}
+function skyDirToScreen(vx, vy) {
+  const c = Math.cos(cam.a), s = Math.sin(cam.a);
+  return { x: c * vx + s * vy, y: -s * vx + c * vy };
+}
+
+// The field's on-screen drift speed at mid-screen, in screen widths per second.
+const fieldSpeed = () => 1 / CONFIG.scrollTime;
+
+// The whole field turns around a pole below the screen, like the sky turning
+// around the celestial pole. Distance from the pole to the screen centre:
+const poleDistance = () => CONFIG.fieldPivotBelow + H / W / 2;
+// ...and the turn rate (radians per second) that gives fieldSpeed at mid-screen.
+const fieldTurnRate = () => fieldSpeed() / poleDistance();
+
+// On-screen velocity of the field at screen point (x, y), in screen widths
+// (origin top-left). Stars above mid-screen move faster, stars below slower,
+// and the left side drifts up while the right side drifts down.
+function fieldVelAt(x, y) {
+  const w = fieldTurnRate();
+  return { x: fieldSpeed() - w * (y - H / W / 2), y: w * (x - 0.5) };
+}
+
+function updateCamera(dt) {
+  // Slide the camera "left" in its own frame while turning it. Together these
+  // swing the view around the pole below the screen.
+  const c = Math.cos(cam.a), s = Math.sin(cam.a);
+  cam.x -= c * fieldSpeed() * dt;
+  cam.y -= s * fieldSpeed() * dt;
+  cam.a -= fieldTurnRate() * dt;
+}
+
+
+/* ==========================================================================
+   STAR FIELD
+   ========================================================================== */
+let fieldStars = [];
+
+function newFieldStar(px, py) {
+  const p = screenToSky(px, py);
+  const r = Math.random();
+  return {
+    x: p.x, y: p.y,
+    b: 0.15 + 0.85 * r * r * r,              // brightness: mostly faint, a few bright
+    size: r > 0.93 ? 2 : r > 0.6 ? 1.5 : 1,
+    tw: rand(0, TAU), twSpeed: rand(0.5, 2), // gentle twinkle
+  };
+}
+
+function seedFieldStars() {
+  const n = Math.min(CONFIG.maxStars, Math.round(CONFIG.starDensity * H / W));
+  fieldStars = [];
+  for (let i = 0; i < n; i++) fieldStars.push(newFieldStar(rand(0, W), rand(0, H)));
+}
+
+// A field star that drifts off screen is recycled: pick a random point on
+// screen, then wind it backwards around the pole until it is just off screen.
+// It drifts back in from wherever the turning field brings stars in.
+function recycledFieldStar() {
+  const px = rand(0, W), py = rand(0, H);
+  const poleX = W / 2, poleY = H / 2 + poleDistance() * W;
+  let dx = px - poleX, dy = py - poleY;
+  const step = 6 / Math.hypot(dx, dy);          // ~6 px per step
+  const c = Math.cos(step), s = Math.sin(step);
+  for (let i = 0; i < 1000; i++) {
+    const x = poleX + dx, y = poleY + dy;
+    if (x < 0 || x > W || y < 0 || y > H) return newFieldStar(x, y);
+    [dx, dy] = [dx * c + dy * s, -dx * s + dy * c];  // one step backwards
+  }
+  return newFieldStar(px, py);
+}
+
+function updateFieldStars() {
+  const m = 12;
+  for (let i = 0; i < fieldStars.length; i++) {
+    const p = skyToScreen(fieldStars[i].x, fieldStars[i].y);
+    if (p.x < -m || p.x > W + m || p.y < -m || p.y > H + m) {
+      fieldStars[i] = recycledFieldStar();
+    }
+  }
+}
+
+
+/* ==========================================================================
+   GAME STATE
+   ========================================================================== */
+let mode = 'title';        // 'title' | 'playing' | 'summary'
+let clock = 0;             // real seconds since page load (for animation)
+let night = null;          // the current night: its clock and its plan
+let stats = null;          // what happened this night
+let objects = [];          // everything tappable on screen
+let slots = [];            // the alert buffer: one entry per slot, null or an object
+let popups = [];           // floating "+10" texts
+let banners = [];          // short centre-screen messages
+let pipShake = 0;          // buffer shake after a tap with no free slot (1 → 0)
+let hintStage = 0;         // 0 tag, 1 wait, 2 link, 3 done
+let nextId = 1;
+
+// Later versions will run nights back to back (health, rising difficulty,
+// buffer growth). For now a run is a single night.
+function makeNight(number) {
+  return {
+    number,
+    t: 0,                  // seconds into the night
+    firstSpawned: false,
+    neos: planNeos(),
+  };
+}
+
+function newStats() {
+  return {
+    score: 0,
+    linked: { mainBelt: 0, comet: 0, neo: 0 },
+    lost: 0,               // tagged objects that left the field before linking
+    starsTagged: 0,
+    neoCaught: 0,
+    neoMissed: 0,
+  };
+}
+
+function startNight(number) {
+  night = makeNight(number);
+  stats = newStats();
+  objects = [];
+  slots = new Array(CONFIG.bufferSlots).fill(null);
+  popups = [];
+  banners = [];
+  pipShake = 0;
+  hintStage = 0;
+  mode = 'playing';
+  titleEl.classList.add('hidden');
+  summaryEl.classList.add('hidden');
+}
+
+function endNight() {
+  mode = 'summary';
+  objects = [];
+  slots.fill(null);
+  showSummary();
+}
+
+
+/* ==========================================================================
+   SPAWNING
+   ========================================================================== */
+
+// Spawn rate at time t: quiet opening, then a climb from rampLow to rampHigh.
+function spawnRate(t) {
+  const c = CONFIG;
+  if (t < c.quietStart) return c.baseSpawnRate * c.quietSpawnFactor;
+  const p = clamp((t - c.quietStart) / (c.nightLength - c.quietStart), 0, 1);
+  return c.baseSpawnRate * (c.rampLow + (c.rampHigh - c.rampLow) * Math.pow(p, c.rampExponent));
+}
+
+// Time for a point at (x, y) moving at (vx, vy) to pass the screen edge plus
+// margin. Units are screen widths; h is the screen height in widths.
+function timeToEdge(x, y, vx, vy, m, h) {
+  let t = Infinity;
+  if (vx > 0) t = Math.min(t, (1 + m - x) / vx);
+  else if (vx < 0) t = Math.min(t, (x + m) / -vx);
+  if (vy > 0) t = Math.min(t, (h + m - y) / vy);
+  else if (vy < 0) t = Math.min(t, (y + m) / -vy);
+  return t;
+}
+
+// Plan a path across the screen for an object moving at (vsx, vsy) against
+// the stars (in screen orientation): pick a point inside the field, work out
+// what the eye sees there (its own motion plus the field's), then trace back
+// to just outside the edge. The trace is straight, so for slow objects the
+// entry point is approximate; they still drift in.
+// `inner` keeps the chosen point away from the edges (0.15 = middle 70%).
+function planEntry(vsx, vsy, inner) {
+  const h = H / W, m = CONFIG.edgeMargin;
+  const tx = rand(inner, 1 - inner);
+  const ty = rand(inner * h, (1 - inner) * h);
+  const f = fieldVelAt(tx, ty);
+  let ux = vsx + f.x, uy = vsy + f.y;            // what the eye sees
+  if (Math.hypot(ux, uy) < 1e-4) { ux = f.x; uy = f.y; }
+  const back = timeToEdge(tx, ty, -ux, -uy, m, h);
+  const fwd = timeToEdge(tx, ty, ux, uy, m, h);
+  return { ex: tx - ux * back, ey: ty - uy * back, ux, uy, crossTime: back + fwd };
+}
+
+function makeObject(type, x, y, vx, vy) {
+  return {
+    id: nextId++, type,
+    x, y, vx, vy, ax: 0, ay: 0,   // sky position, velocity and acceleration
+    state: 'unknown',             // 'unknown' | 'tagged' | 'ready' | 'linked'
+    age: 0,
+    entered: false,               // has it been fully on screen yet?
+    alpha: 1,
+    tagX: 0, tagY: 0, tagTime: 0, // where and when it was tagged (sky coords)
+    flash: 0,                     // ring pulse after tagging / turning blue (1 → 0)
+    fade: 0,                      // link fade-out progress (0 → 1)
+    removed: false,
+  };
+}
+
+// A mover enters from whichever edge its path comes from. Its sky velocity
+// is random in direction; what you see on screen is that plus the field drift.
+function spawnMover(type, speed, inner) {
+  const ang = rand(0, TAU);
+  const vsx = Math.cos(ang) * speed, vsy = Math.sin(ang) * speed;  // vs stars, screen orientation
+  const e = planEntry(vsx, vsy, inner);
+  const p = screenToSky(e.ex * W, e.ey * W);
+  const v = screenDirToSky(vsx, vsy);
+  return makeObject(type, p.x, p.y, v.x, v.y);
+}
+
+function spawnMainBelt() {
+  const c = CONFIG.mainBelt;
+  const speed = rand(c.speedMin, c.speedMax);
+  const o = spawnMover('mainBelt', speed, 0.15);
+  if (Math.random() < c.curveChance) {
+    // Constant sideways pull gives a gentle quadratic curve.
+    const k = rand(-c.curveMax, c.curveMax);
+    o.ax = -o.vy * k;
+    o.ay = o.vx * k;
+  }
+  // A lumpy rock outline, Asteroids-style.
+  const n = 8 + Math.floor(Math.random() * 3);
+  o.shape = [];
+  for (let i = 0; i < n; i++) o.shape.push(rand(0.68, 1.0));
+  o.rot = rand(0, TAU);
+  o.spin = rand(-0.8, 0.8);
+  objects.push(o);
+}
+
+function spawnComet() {
+  const c = CONFIG.comet;
+  const o = spawnMover('comet', rand(c.speedMin, c.speedMax), 0.15);
+  o.tailJitter = [];
+  for (let i = 0; i < c.tailDots; i++) o.tailJitter.push(rand(-1, 1));
+  objects.push(o);
+}
+
+// Variable stars brighten into view anywhere on the field, then ride with
+// the stars until they scroll off the right edge.
+function spawnStar() {
+  const c = CONFIG.star;
+  const p = screenToSky(rand(0.05, 0.75) * W, rand(0.08, 0.9) * H);
+  const o = makeObject('star', p.x, p.y, 0, 0);
+  o.entered = true;
+  o.alpha = 0;
+  o.flickerPeriod = rand(c.flickerPeriodMin, c.flickerPeriodMax);
+  o.flickerPhase = rand(0, TAU);
+  objects.push(o);
+}
+
+function spawnRandom() {
+  const type = pickWeighted(CONFIG.mix);
+  if (type === 'mainBelt') spawnMainBelt();
+  else if (type === 'comet') spawnComet();
+  else if (type === 'star') spawnStar();
+}
+
+
+/* ==========================================================================
+   CRITICAL TARGETS (near-Earth objects)
+   Arrival times are picked at the start of the night. The path is picked
+   when the warning starts, so the warning marker points at the real entry.
+   ========================================================================== */
+function planNeos() {
+  const c = CONFIG.neo;
+  // Slowest possible crossing on this screen shape, corner to corner.
+  // (The field can push against it, so take its slowest speed minus the field's.)
+  const worstCross = (Math.hypot(1, H / W) + 2 * CONFIG.edgeMargin) / (c.speedMin - 2 * fieldSpeed());
+  const latest = CONFIG.nightLength - worstCross - c.endBuffer;
+  const list = [];
+  for (let i = 0; i < c.perNight; i++) {
+    const arrive = Math.max(c.warningLead, Math.min(rand(c.windowStart, c.windowEnd), latest));
+    list.push({ arrive, warnAt: arrive - c.warningLead, path: null, spawned: false });
+  }
+  return list;
+}
+
+// Pick a path through the middle of the screen. Paths shorter than
+// minCrossTime (e.g. straight down a short landscape screen) are re-rolled,
+// so there is always time to tag it, watch it turn blue and link it.
+function planNeoPath(neo) {
+  const c = CONFIG.neo;
+  let best = null;
+  for (let i = 0; i < 40; i++) {
+    const speed = rand(c.speedMin, c.speedMax);
+    const ang = rand(0, TAU);
+    const vsx = Math.cos(ang) * speed, vsy = Math.sin(ang) * speed;
+    const path = { vsx, vsy, ...planEntry(vsx, vsy, c.centerBox) };
+    if (!best || path.crossTime > best.crossTime) best = path;
+    if (path.crossTime >= c.minCrossTime) break;
+  }
+  neo.path = best;
+}
+
+function spawnNeo(neo) {
+  const p = screenToSky(neo.path.ex * W, neo.path.ey * W);
+  const v = screenDirToSky(neo.path.vsx, neo.path.vsy);
+  const o = makeObject('neo', p.x, p.y, v.x, v.y);
+  objects.push(o);
+}
+
+function updateNeos() {
+  for (const neo of night.neos) {
+    if (!neo.path && night.t >= neo.warnAt) {
+      planNeoPath(neo);
+      Sound.warn();
+      addBanner('NEAR-EARTH OBJECT INBOUND', CONFIG.neo.warningLead + 1.2);
+    }
+    if (!neo.spawned && night.t >= neo.arrive) {
+      if (!neo.path) planNeoPath(neo);
+      spawnNeo(neo);
+      neo.spawned = true;
+    }
+  }
+}
+
+
+/* ==========================================================================
+   BUFFER, TAGGING AND LINKING
+   ========================================================================== */
+function takeSlot(o) {
+  const i = slots.indexOf(null);
+  if (i < 0) return false;
+  slots[i] = o;
+  return true;
+}
+function freeSlot(o) {
+  const i = slots.indexOf(o);
+  if (i >= 0) slots[i] = null;
+}
+
+// Each type's config block, and its points and arc distance (a type can override the global arc).
+const TYPE_CFG = { mainBelt: CONFIG.mainBelt, comet: CONFIG.comet, neo: CONFIG.neo, star: CONFIG.star };
+const pointsFor = o => TYPE_CFG[o.type].points;
+const arcFor = o => TYPE_CFG[o.type].arcDistance ?? CONFIG.arcDistance;
+
+function tagObject(o) {
+  if (!takeSlot(o)) {
+    Sound.full();
+    pipShake = 1;
+    return;
+  }
+  o.state = 'tagged';
+  o.tagX = o.x;
+  o.tagY = o.y;
+  o.tagTime = night.t;
+  o.flash = 1;
+  if (o.type === 'star') stats.starsTagged++;
+  if (hintStage === 0) hintStage = 1;
+  Sound.tag();
+}
+
+function linkObject(o) {
+  o.state = 'linked';
+  o.fade = 0;
+  freeSlot(o);
+  const pts = pointsFor(o);
+  stats.score += pts;
+  if (stats.linked[o.type] !== undefined) stats.linked[o.type]++;
+  if (o.type === 'neo') {
+    stats.neoCaught++;
+    addBanner('NEAR-EARTH OBJECT CATALOGED', 2);
+  }
+  const s = skyToScreen(o.x, o.y);
+  popups.push({ x: s.x, y: s.y, text: `+${pts}`, t: 0 });
+  if (hintStage === 2) hintStage = 3;
+  Sound.link();
+}
+
+// An object left the field. Tagged objects free their slot; real objects
+// count as lost tracks; a near-Earth object that wasn't linked is a miss.
+function objectLeft(o) {
+  if (o.state === 'tagged' || o.state === 'ready') {
+    freeSlot(o);
+    if (o.type !== 'star') stats.lost++;
+  }
+  if (o.type === 'neo' && o.state !== 'linked') {
+    stats.neoMissed++;
+    addBanner('NEAR-EARTH OBJECT MISSED', 2);
+    Sound.miss();
+  }
+  o.removed = true;
+}
+
+function tapRadiusPx() { return Math.max(CONFIG.tapRadius * W, CONFIG.tapRadiusMinPx); }
+
+// A tap links the nearest blue object in range; failing that it tags the
+// nearest white one. Yellow objects and empty sky ignore taps.
+function handleTap(px, py) {
+  const r = tapRadiusPx();
+  let ready = null, readyD = Infinity, fresh = null, freshD = Infinity;
+  for (const o of objects) {
+    if (o.removed || !o.entered) continue;
+    const s = skyToScreen(o.x, o.y);
+    const d = Math.hypot(s.x - px, s.y - py);
+    if (d > r) continue;
+    if (o.state === 'ready' && d < readyD) { ready = o; readyD = d; }
+    else if (o.state === 'unknown' && o.alpha > 0.5 && d < freshD) { fresh = o; freshD = d; }
+  }
+  if (ready) linkObject(ready);
+  else if (fresh) tagObject(fresh);
+}
+
+
+/* ==========================================================================
+   UPDATE
+   ========================================================================== */
+function updateObject(o, dt) {
+  o.age += dt;
+  o.vx += o.ax * dt;
+  o.vy += o.ay * dt;
+  o.x += o.vx * dt;
+  o.y += o.vy * dt;
+  if (o.rot !== undefined) o.rot += o.spin * dt;
+  o.flash = Math.max(0, o.flash - dt * 2);
+
+  if (o.type === 'star' && o.state === 'unknown') {
+    o.alpha = Math.min(1, o.alpha + dt / CONFIG.star.fadeIn);
+  }
+
+  // Tagged → ready once it has moved the arc distance against the stars.
+  if (o.state === 'tagged' && o.type !== 'star') {
+    if (Math.hypot(o.x - o.tagX, o.y - o.tagY) >= arcFor(o)) {
+      o.state = 'ready';
+      o.flash = 1;
+      if (hintStage === 1) hintStage = 2;
+      Sound.ready();
+    }
+  }
+
+  // A tagged decoy never turns blue; after a while it clears and frees its slot.
+  if (o.state === 'tagged' && o.type === 'star' && night.t - o.tagTime >= CONFIG.star.clearTime) {
+    o.state = 'unknown';
+    freeSlot(o);
+  }
+
+  if (o.state === 'linked') {
+    o.fade += dt / CONFIG.linkFadeTime;
+    if (o.fade >= 1) o.removed = true;
+    return;
+  }
+
+  // Edge checks.
+  const s = skyToScreen(o.x, o.y);
+  const m = CONFIG.edgeMargin * W;
+  const onScreen = s.x >= 0 && s.x <= W && s.y >= 0 && s.y <= H;
+  if (onScreen) o.entered = true;
+  const gone = s.x < -m || s.x > W + m || s.y < -m || s.y > H + m;
+  if (gone && o.entered) objectLeft(o);
+  else if (!o.entered && o.age > 30) o.removed = true;   // never made it in; drop quietly
+}
+
+function updateNight(dt) {
+  night.t += dt;
+
+  // Spawning: one guaranteed early asteroid, then random arrivals.
+  if (!night.firstSpawned && night.t >= CONFIG.firstObjectAt) {
+    spawnMainBelt();
+    night.firstSpawned = true;
+  }
+  if (Math.random() < spawnRate(night.t) * dt) spawnRandom();
+  updateNeos();
+
+  for (const o of objects) updateObject(o, dt);
+  objects = objects.filter(o => !o.removed);
+
+  for (const p of popups) p.t += dt;
+  popups = popups.filter(p => p.t < 1.1);
+  for (const b of banners) b.t += dt;
+  banners = banners.filter(b => b.t < b.dur);
+  pipShake = Math.max(0, pipShake - dt * 2.5);
+
+  if (night.t >= CONFIG.nightLength) endNight();
+}
+
+function addBanner(text, dur) {
+  banners = banners.filter(b => b.text !== text);
+  banners.push({ text, t: 0, dur });
+}
+
+
+/* ==========================================================================
+   DRAWING
+   ========================================================================== */
+const C = CONFIG.colors;
+
+function stateColor(o) {
+  if (o.state === 'tagged') return C.yellow;
+  if (o.state === 'ready' || o.state === 'linked') return C.blue;
+  return C.white;
+}
+
+// How far into dawn we are (0 = night, 1 = full dawn).
+function dawnAmount() {
+  const d = CONFIG.dawn;
+  if (!d.enabled || mode !== 'playing') return 0;
+  return clamp((night.t - (CONFIG.nightLength - d.duration)) / d.duration, 0, 1);
+}
+
+function drawSky() {
+  const dawn = dawnAmount();
+  ctx.fillStyle = dawn > 0 ? mixHex(C.sky, C.dawnSky, dawn) : C.sky;
+  ctx.fillRect(0, 0, W, H);
+
+  const fade = 1 - CONFIG.dawn.starFade * dawn;
+  ctx.fillStyle = C.fieldStar;
+  for (const s of fieldStars) {
+    const p = skyToScreen(s.x, s.y);
+    const a = s.b * (0.85 + 0.15 * Math.sin(s.tw + clock * s.twSpeed)) * fade;
+    ctx.globalAlpha = a;
+    ctx.fillRect(p.x - s.size / 2, p.y - s.size / 2, s.size, s.size);
+    if (s.size >= 2) {               // soft halo on the brightest stars
+      ctx.globalAlpha = a * 0.15;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4, 0, TAU);
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Dotted line from the tag point (which moves with the stars) to the object,
+// plus a ring around a yellow object that fills as it traces its arc.
+function drawArcTrail(o, s, r) {
+  if (!CONFIG.showArcTrail || o.type === 'star') return;
+  if (o.state !== 'tagged' && o.state !== 'ready') return;
+  const t = skyToScreen(o.tagX, o.tagY);
+  const col = stateColor(o);
+  ctx.save();
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = 0.45;
+  ctx.setLineDash([2, 4]);
+  ctx.beginPath();
+  ctx.moveTo(t.x, t.y);
+  ctx.lineTo(s.x, s.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // small cross where it was tagged
+  ctx.globalAlpha = 0.7;
+  ctx.beginPath();
+  ctx.moveTo(t.x - 3, t.y - 3); ctx.lineTo(t.x + 3, t.y + 3);
+  ctx.moveTo(t.x + 3, t.y - 3); ctx.lineTo(t.x - 3, t.y + 3);
+  ctx.stroke();
+  if (o.state === 'tagged') {
+    const prog = clamp(Math.hypot(o.x - o.tagX, o.y - o.tagY) / arcFor(o), 0, 1);
+    ctx.globalAlpha = 0.9;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r + 7, -Math.PI / 2, -Math.PI / 2 + prog * TAU);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawMainBelt(o, s, r, col) {
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1.6;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  const n = o.shape.length;
+  for (let i = 0; i <= n; i++) {
+    const a = o.rot + (i % n) / n * TAU;
+    const rr = r * o.shape[i % n];
+    const x = s.x + Math.cos(a) * rr, y = s.y + Math.sin(a) * rr;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawComet(o, s, r, col) {
+  // Tail trails behind its motion against the stars.
+  const d = skyDirToScreen(o.vx, o.vy);
+  const len = Math.hypot(d.x, d.y) || 1;
+  const tx = -d.x / len, ty = -d.y / len;
+  ctx.fillStyle = col;
+  const a = ctx.globalAlpha;
+  const n = o.tailJitter.length;
+  for (let i = 0; i < n; i++) {
+    const k = (i + 1) / n;
+    const dist = r * 1.6 * (i + 1);
+    const j = o.tailJitter[i] * r * 0.6 * k;   // fuzzy sideways scatter
+    const x = s.x + tx * dist - ty * j;
+    const y = s.y + ty * dist + tx * j;
+    const sz = Math.max(1, r * 0.9 * (1 - k * 0.6));
+    ctx.globalAlpha = a * 0.55 * (1 - k);
+    ctx.fillRect(x - sz / 2, y - sz / 2, sz, sz);
+  }
+  // faint coma, then nucleus
+  ctx.globalAlpha = a * 0.18;
+  ctx.beginPath(); ctx.arc(s.x, s.y, r * 2.4, 0, TAU); ctx.fill();
+  ctx.globalAlpha = a;
+  ctx.beginPath(); ctx.arc(s.x, s.y, r, 0, TAU); ctx.fill();
+}
+
+function drawNeo(o, s, r, col) {
+  // Diamond core inside pulsing target brackets, labelled. Must be unmistakable.
+  ctx.fillStyle = col;
+  ctx.strokeStyle = col;
+  ctx.beginPath();
+  ctx.moveTo(s.x, s.y - r); ctx.lineTo(s.x + r * 0.75, s.y);
+  ctx.lineTo(s.x, s.y + r); ctx.lineTo(s.x - r * 0.75, s.y);
+  ctx.closePath();
+  ctx.fill();
+  const b = r * (2.1 + 0.25 * Math.sin(clock * 10));
+  const k = r * 0.8;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    const cx = s.x + sx * b, cy = s.y + sy * b;
+    ctx.moveTo(cx, cy - sy * k); ctx.lineTo(cx, cy); ctx.lineTo(cx - sx * k, cy);
+  }
+  ctx.stroke();
+  ctx.font = font(10, 700);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('NEO', s.x, s.y - b - 4);
+}
+
+function drawStar(o, s, r, col) {
+  // Flickering point with small diffraction spikes.
+  const f = 0.5 + 0.3 * Math.sin(clock * TAU / o.flickerPeriod + o.flickerPhase)
+                + 0.2 * Math.sin(clock * 17.3 + o.flickerPhase * 3);
+  const a = ctx.globalAlpha;
+  ctx.globalAlpha = a * clamp(0.35 + 0.65 * f, 0, 1);
+  ctx.fillStyle = col;
+  ctx.strokeStyle = col;
+  ctx.beginPath(); ctx.arc(s.x, s.y, r * (0.8 + 0.4 * f), 0, TAU); ctx.fill();
+  const spike = r * (2.2 + 1.6 * f);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(s.x - spike, s.y); ctx.lineTo(s.x + spike, s.y);
+  ctx.moveTo(s.x, s.y - spike); ctx.lineTo(s.x, s.y + spike);
+  ctx.stroke();
+  ctx.globalAlpha = a;
+}
+
+function drawObject(o) {
+  const s = skyToScreen(o.x, o.y);
+  const r = sizePx(TYPE_CFG[o.type]);
+  const col = stateColor(o);
+
+  drawArcTrail(o, s, r);
+
+  ctx.save();
+  ctx.globalAlpha = o.alpha * (o.state === 'linked' ? 1 - o.fade : 1);
+  ctx.shadowColor = col;
+  ctx.shadowBlur = o.state === 'ready' ? 10 + 6 * Math.sin(clock * 8) : 8;
+  if (o.type === 'mainBelt') drawMainBelt(o, s, r, col);
+  else if (o.type === 'comet') drawComet(o, s, r, col);
+  else if (o.type === 'neo') drawNeo(o, s, r, col);
+  else if (o.type === 'star') drawStar(o, s, r, col);
+  ctx.restore();
+
+  // Ring pulse on tag / turning blue, and an expanding ring on link.
+  if (o.flash > 0 || o.state === 'linked') {
+    const p = o.state === 'linked' ? o.fade : 1 - o.flash;
+    ctx.save();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
+    ctx.globalAlpha = (1 - p) * 0.8;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r + 4 + p * (o.state === 'linked' ? 36 : 18), 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  if (CONFIG.debugTapRadius) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.beginPath(); ctx.arc(s.x, s.y, tapRadiusPx(), 0, TAU); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// Pulsing arrow at the screen edge where the near-Earth object will enter.
+function drawNeoWarnings() {
+  for (const neo of night.neos) {
+    if (!neo.path || night.t > neo.arrive + 0.4) continue;
+    const pad = 22;
+    const x = clamp(neo.path.ex * W, pad + safe.left, W - pad - safe.right);
+    const y = clamp(neo.path.ey * W, pad + safe.top, H - pad - safe.bottom);
+    const ang = Math.atan2(neo.path.uy, neo.path.ux);
+    const pulse = 0.5 + 0.5 * Math.sin(clock * 14);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(ang);
+    ctx.strokeStyle = C.white;
+    ctx.fillStyle = C.white;
+    ctx.shadowColor = C.white;
+    ctx.shadowBlur = 12;
+    ctx.globalAlpha = 0.5 + 0.5 * pulse;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 2; i++) {           // double chevron pointing along its path
+      const o = i * 8;
+      ctx.beginPath();
+      ctx.moveTo(-6 + o, -8); ctx.lineTo(2 + o, 0); ctx.lineTo(-6 + o, 8);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.arc(0, 0, 16 + pulse * 4, 0, TAU);
+    ctx.globalAlpha *= 0.5;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawPopups() {
+  ctx.save();
+  ctx.font = font(15, 700);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = C.blue;
+  ctx.shadowColor = C.blue;
+  ctx.shadowBlur = 8;
+  for (const p of popups) {
+    ctx.globalAlpha = 1 - p.t / 1.1;
+    ctx.fillText(p.text, p.x, p.y - 18 - p.t * 30);
+  }
+  ctx.restore();
+}
+
+function drawHud() {
+  const top = safe.top + 14;
+  const big = clamp(W * 0.06, 22, 34);
+  ctx.save();
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = C.white;
+  ctx.shadowColor = 'rgba(232,236,245,0.5)';
+  ctx.shadowBlur = 8;
+
+  // Top left: time left in the night.
+  ctx.textAlign = 'left';
+  ctx.globalAlpha = 0.55;
+  ctx.font = font(11);
+  ctx.fillText(`NIGHT ${night.number}`, safe.left + 16, top);
+  ctx.globalAlpha = 1;
+  ctx.font = font(big, 700);
+  ctx.fillText(String(Math.max(0, Math.ceil(CONFIG.nightLength - night.t))), safe.left + 16, top + 15);
+
+  // Top right: score.
+  ctx.textAlign = 'right';
+  ctx.globalAlpha = 0.55;
+  ctx.font = font(11);
+  ctx.fillText('SCORE', W - safe.right - 16, top);
+  ctx.globalAlpha = 1;
+  ctx.font = font(big, 700);
+  ctx.fillText(String(stats.score), W - safe.right - 16, top + 15);
+
+  // Centre: banners.
+  ctx.textAlign = 'center';
+  ctx.font = font(clamp(W * 0.032, 12, 16), 700);
+  let by = top + 62;
+  for (const b of banners) {
+    const fadeOut = clamp((b.dur - b.t) / 0.4, 0, 1);
+    const blink = b.text.endsWith('INBOUND') ? 0.55 + 0.45 * Math.sin(clock * 14) : 1;
+    ctx.globalAlpha = fadeOut * blink;
+    ctx.fillText(b.text, W / 2, by);
+    by += 22;
+  }
+  ctx.restore();
+
+  drawBuffer();
+}
+
+// The alert buffer: a row of pips near the bottom.
+function drawBuffer() {
+  const n = slots.length;
+  const pr = 9, gap = 30;
+  const y = H - safe.bottom - 34;
+  const shake = Math.sin(clock * 70) * 7 * pipShake;
+  const x0 = W / 2 - (n - 1) * gap / 2 + shake;
+  ctx.save();
+  for (let i = 0; i < n; i++) {
+    const o = slots[i];
+    const x = x0 + i * gap;
+    ctx.beginPath();
+    ctx.arc(x, y, pr, 0, TAU);
+    if (!o) {
+      ctx.globalAlpha = 0.45 + 0.55 * pipShake;
+      ctx.strokeStyle = C.white;
+      ctx.lineWidth = 1.5;
+      ctx.shadowBlur = 0;
+      ctx.stroke();
+    } else {
+      const col = o.state === 'ready' ? C.blue : C.yellow;
+      ctx.globalAlpha = o.state === 'ready' ? 0.75 + 0.25 * Math.sin(clock * 8) : 1;
+      ctx.fillStyle = col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 10;
+      ctx.fill();
+    }
+  }
+
+  // How-to hints, until the first link.
+  if (CONFIG.showHints && hintStage < 3) {
+    const text = ['tap a moving object to tag it', 'wait for it to turn blue', 'tap blue to link it'][hintStage];
+    ctx.globalAlpha = 0.6;
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = C.white;
+    ctx.font = font(13, 500);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(text, W / 2, y - pr - 14);
+  }
+  ctx.restore();
+}
+
+function render() {
+  drawSky();
+  if (mode !== 'playing') return;
+  for (const o of objects) drawObject(o);
+  drawNeoWarnings();
+  drawPopups();
+  drawHud();
+}
+
+
+/* ==========================================================================
+   SCREENS
+   ========================================================================== */
+const titleEl = document.getElementById('title');
+const summaryEl = document.getElementById('summary');
+const summaryPanel = document.getElementById('summaryPanel');
+
+function showSummary() {
+  const s = stats;
+  const total = night.neos.length;
+  const critical = s.neoCaught > 0
+    ? `<span class="caught">caught</span>`
+    : `<span class="missed">missed</span>`;
+  summaryPanel.innerHTML = `
+    <div class="label">NIGHT ${night.number} COMPLETE</div>
+    <div class="score">${s.score}</div>
+    <table>
+      <tr><td>Main belt linked</td><td class="n">${s.linked.mainBelt}</td><td class="pts">${s.linked.mainBelt * CONFIG.mainBelt.points}</td></tr>
+      <tr><td>Comets linked</td><td class="n">${s.linked.comet}</td><td class="pts">${s.linked.comet * CONFIG.comet.points}</td></tr>
+      <tr><td>Near-Earth object</td><td class="n">${total === 1 ? critical : `${s.neoCaught} / ${total}`}</td><td class="pts">${s.linked.neo * CONFIG.neo.points}</td></tr>
+      <tr class="gap bad"><td>Lost arcs</td><td class="n">${s.lost}</td></tr>
+      <tr class="bad"><td>Stars tagged</td><td class="n">${s.starsTagged}</td></tr>
+    </table>
+    <button id="again" disabled>PLAY AGAIN</button>`;
+  summaryEl.classList.remove('hidden');
+  // Short delay so a frantic last tap doesn't skip the summary.
+  const btn = document.getElementById('again');
+  setTimeout(() => { btn.disabled = false; }, 800);
+  btn.addEventListener('click', () => startNight(1));
+}
+
+titleEl.addEventListener('click', () => {
+  Sound.unlock();
+  startNight(1);
+});
+
+
+/* ==========================================================================
+   INPUT
+   Pointer events cover mouse, touch and pen with one code path.
+   ========================================================================== */
+canvas.addEventListener('pointerdown', e => {
+  if (mode !== 'playing') return;
+  e.preventDefault();
+  handleTap(e.clientX, e.clientY);
+});
+document.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('gesturestart', e => e.preventDefault());   // iOS pinch zoom
+
+
+/* ==========================================================================
+   FRAME LOOP
+   Uses elapsed time, so speed is the same at 60 Hz, 120 Hz or a slow phone.
+   ========================================================================== */
+let last = performance.now();
+function frame(now) {
+  // Cap the step so a stall or a background tab doesn't jump the game ahead.
+  const dt = clamp((now - last) / 1000, 0, 0.05);
+  last = now;
+  clock += dt;
+  updateCamera(dt);
+  updateFieldStars();
+  if (mode === 'playing') updateNight(dt);
+  render();
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', resize);
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
