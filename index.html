@@ -166,6 +166,7 @@
   .menu { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 28px; }
   .menu button { min-width: 220px; }
   .label { font-size: 13px; letter-spacing: 0.2em; opacity: 0.6; }
+  .diag { margin-top: 26px; font-size: 11px; opacity: 0.4; line-height: 1.5; }
   .version {
     position: absolute;
     left: 0; right: 0;
@@ -231,6 +232,7 @@
       <button id="soundBtn" class="secondary">SOUND: ON</button>
       <button id="restartBtn" class="secondary">RESTART</button>
     </div>
+    <div class="diag" id="audioInfo"></div>
   </div>
 </div>
 
@@ -255,7 +257,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.26';
+const VERSION = 'v0.27';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -550,6 +552,17 @@ const Sound = (() => {
     },
 
     get muted() { return muted; },
+
+    // One line about the audio setup, shown in the pause menu to help track
+    // down device problems (e.g. sound lagging on one phone).
+    info() {
+      if (!actx) return 'audio: not started';
+      const ms = v => (v === undefined ? '?' : Math.round(v * 1000) + ' ms');
+      const session = navigator.audioSession ? navigator.audioSession.type
+        : silentLoop ? 'silent loop' : 'default';
+      return `audio: ${actx.state} · ${Math.round(actx.sampleRate / 100) / 10} kHz · ` +
+        `base ${ms(actx.baseLatency)} · output ${ms(actx.outputLatency)} · session ${session}`;
+    },
     setMuted(m) {
       muted = m;
       if (master) master.gain.value = m ? 0 : S.volume;   // also cuts notes already playing
@@ -985,6 +998,7 @@ function pauseGame() {
   if (mode !== 'playing') return;
   mode = 'paused';
   setHudButtons(false);
+  document.getElementById('audioInfo').textContent = `${VERSION} · ${Sound.info()}`;
   pauseEl.classList.remove('hidden');
 }
 function resumeGame() {
