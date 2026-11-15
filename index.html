@@ -255,7 +255,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.22';
+const VERSION = 'v0.25';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -412,6 +412,7 @@ const CONFIG = {
   // Frequencies are in Hz; phone speakers barely play anything below ~150 Hz.
   sound: {
     enabled: true,            // master switch for all sound
+    ignoreSilentSwitch: true, // play even when the iPhone's ring/silent switch is on silent
     volume: 0.6,              // master volume, 0 to 1
     key: 72,                  // root note of the scale as a MIDI number (72 = the C above middle C)
     keyStepPerNight: 5,       // each night moves the key up this many semitones (5 = a fourth: C, F, B♭, E♭...),
@@ -425,6 +426,19 @@ const CONFIG = {
       gap: 0.065,             // seconds between notes in the run
       length: 0.35,           // how long each note rings
       volume: 0.24,
+      // Critical catches land on a chord after the run, built on tonight's key:
+      // semitones above the root. Major 7th for near-Earth, major 9th for
+      // interstellar. (Avoid 10 = dominant 7th: it sounds unresolved.)
+      chords: { neo: [0, 4, 7, 11], iso: [0, 4, 7, 11, 14] },
+      chordLength: { neo: 1.4, iso: 2.0 },  // seconds the chord rings
+      chordVolume: 0.11,      // per note (several play at once)
+      strum: 0.03,            // seconds between chord notes, low to high
+    },
+    nightEnd: {               // a night survived: a slow rolled chord in tonight's key
+      chord: [-12, -5, 0, 4, 7, 11, 14, 19],   // semitones from the root, low to high (an open major 9th)
+      roll: 0.09,             // seconds between notes as it rolls upward
+      length: 2.8,            // how long each note rings
+      volume: 0.10,           // per note
     },
     full:  { freq: 190, toFreq: 95, length: 0.12, volume: 0.45 },  // dull thud, pitch drops
     warn:  { high: 988, low: 740, beep: 0.16, volume: 0.16 },      // near-Earth: high-low pairs for the whole warning
@@ -440,11 +454,12 @@ const CONFIG = {
 
 /* ==========================================================================
    SOUND
-   Generated with Web Audio: no audio files. It follows the phone's own
-   silent switch and volume (we never override the silent switch), and the
-   in-game mute silences it on top of that.
-   Browsers only allow sound after a tap, so unlock() runs on the taps that
-   start or resume a night.
+   Generated with Web Audio: no audio files. It plays even with the iPhone's
+   silent switch on (like a music app; see ignoreSilentSwitch); the in-game
+   mute is how to silence it, and stays on until the page reloads.
+   Browsers only allow sound after a tap, so unlock() runs on taps. Phones can
+   suspend audio (calls, notifications, locking), so every tap also tries to
+   wake it back up.
    ========================================================================== */
 const Sound = (() => {
   const S = CONFIG.sound;
@@ -484,18 +499,47 @@ const Sound = (() => {
     osc.stop(t0 + length + 0.05);
   }
 
+  // Play through the silent switch. Newer Safari has a setting for this
+  // (audioSession 'playback', like a music app). Older iPhones need the
+  // classic trick: a looping, silent <audio> element switches the page into
+  // media playback, which Web Audio then shares. The silent clip is made in
+  // code (a tiny WAV of zeros), so there is still no audio file.
+  let silentLoop = null;
+  function playThroughSilentSwitch() {
+    if (navigator.audioSession) {
+      try { navigator.audioSession.type = 'playback'; } catch (e) { /* not supported */ }
+      return;
+    }
+    if (!silentLoop) {
+      const n = 800, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+      const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+      str(0, 'RIFF'); v.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt ');
+      v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+      v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true);
+      v.setUint16(34, 8, true); str(36, 'data'); v.setUint32(40, n, true);
+      for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);   // 8-bit silence
+      silentLoop = document.createElement('audio');
+      silentLoop.src = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+      silentLoop.loop = true;
+      silentLoop.setAttribute('playsinline', '');
+    }
+    if (silentLoop.paused) silentLoop.play().catch(() => {});
+  }
+
   return {
     unlock() {
       if (!S.enabled) return;
+      if (S.ignoreSilentSwitch) playThroughSilentSwitch();
       if (!actx) {
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) return;
         actx = new AC();
         master = actx.createGain();
-        master.gain.value = S.volume;
+        master.gain.value = muted ? 0 : S.volume;
         master.connect(actx.destination);
       }
-      if (actx.state !== 'running') actx.resume();
+      // 'suspended' after a background trip, 'interrupted' after a call or Siri.
+      if (actx.state !== 'running') actx.resume().catch(() => {});
     },
 
     // Each night is in a different key.
@@ -552,6 +596,29 @@ const Sound = (() => {
         tone({ freq: f, type: 'square', at: i * S.link.gap, length: len, volume: S.link.volume * 0.35 });
         tone({ freq: f, type: 'triangle', at: i * S.link.gap, length: len, volume: S.link.volume });
       }
+      // Critical targets: a soft, slightly strummed chord after the run.
+      const chord = S.link.chords[o.type];
+      if (chord) {
+        const at = steps * S.link.gap;
+        const len = S.link.chordLength[o.type];
+        chord.forEach((semi, i) => {
+          const f = 440 * Math.pow(2, (S.key + keyShift + semi - 69) / 12);
+          tone({ freq: f, type: 'triangle', at: at + i * S.link.strum, length: len, volume: S.link.chordVolume, attack: 0.02 });
+          tone({ freq: f, at: at + i * S.link.strum, length: len, volume: S.link.chordVolume * 0.6, attack: 0.02 });
+        });
+      }
+    },
+
+    // End of a night survived: a slow, rolled chord as a reward. Each note
+    // rings on, so they stack into one big chord.
+    nightEnd() {
+      if (!live()) return;
+      const n = S.nightEnd;
+      n.chord.forEach((semi, i) => {
+        const f = 440 * Math.pow(2, (S.key + keyShift + semi - 69) / 12);
+        tone({ freq: f, type: 'triangle', at: i * n.roll, length: n.length, volume: n.volume, attack: 0.02 });
+        tone({ freq: f, at: i * n.roll, length: n.length, volume: n.volume * 0.6, attack: 0.02 });
+      });
     },
 
     // Full buffer: a short, dull drop in pitch.
@@ -774,7 +841,8 @@ let popups = [];           // floating "+10" texts
 let banners = [];          // short centre-screen messages
 let pipShake = 0;          // buffer shake after a tap with no free slot (1 → 0)
 let damageFlash = 0;       // red edge flash after losing health (1 → 0)
-let hintStage = 0;         // 0 tag, 1 wait, 2 link, 3 done
+let hintStage = 0;         // first-night tutorial: 0 tag, 1 wait, 2 link, 3 done
+let tutorObj = null;       // the object the tutorial is pointing at
 let nextId = 1;
 
 // Difficulty for night n, from CONFIG.nights (and CONFIG.afterTable past its end).
@@ -851,6 +919,7 @@ function startNight(number) {
   pipShake = 0;
   damageFlash = 0;
   hintStage = number === 1 ? 0 : 3;     // how-to hints on the first night only
+  tutorObj = null;
   if (number > 1) addBanner(`NIGHT ${number}`, 3);   // no hint of how many critical targets are coming
   mode = 'playing';
   titleEl.classList.add('hidden');
@@ -872,6 +941,7 @@ function addNightToRun() {
 
 // The night ran its full length: a clean night restores health, then the summary.
 function endNight() {
+  Sound.nightEnd();
   addNightToRun();
   run.nightsCompleted++;
   if (stats.neoMissed + stats.isoMissed === 0 && run.health < CONFIG.maxHealth) {
@@ -1167,7 +1237,10 @@ function tagObject(o) {
   o.tagTime = night.t;
   o.flash = 1;
   if (o.type === 'star') stats.starsTagged++;
-  if (hintStage === 0) hintStage = 1;
+  if (hintStage === 0) {
+    if (o.type === 'star') addBanner("THAT'S A STAR: IT WON'T MOVE. TRY A MOVING ONE", 3);
+    else { hintStage = 1; tutorObj = o; }
+  }
   Sound.tag(o);
 }
 
@@ -1183,13 +1256,21 @@ function linkObject(o) {
   if (isCritical(o)) addBanner(`${CRITICAL_NAME[o.type]} CATALOGED`, 2);
   const s = skyToScreen(o.x, o.y);
   popups.push({ x: s.x, y: s.y, text: `+${pts}`, t: 0 });
-  if (hintStage === 2) hintStage = 3;
+  if (hintStage === 2 && o === tutorObj) {
+    hintStage = 3;
+    addBanner('LINKED! KEEP GOING', 2.5);
+  }
   Sound.link(o);
 }
 
 // An object left the field. Tagged objects free their slot; real objects
 // count as lost tracks; a near-Earth object that wasn't linked is a miss.
 function objectLeft(o) {
+  if (o === tutorObj && hintStage < 3) {     // tutorial object got away: show it again on another
+    hintStage = 0;
+    tutorObj = null;
+    addBanner('IT GOT AWAY: LINK IT BEFORE IT LEAVES', 3);
+  }
   if (o.state === 'tagged' || o.state === 'ready') {
     freeSlot(o);
     if (o.type !== 'star') stats.lost++;
@@ -1257,7 +1338,7 @@ function updateObject(o, dt) {
     if (Math.hypot(o.x - o.tagX, o.y - o.tagY) >= arcFor(o)) {
       o.state = 'ready';
       o.flash = 1;
-      if (hintStage === 1) hintStage = 2;
+      if (hintStage === 1 && o === tutorObj) hintStage = 2;
       Sound.ready(o);
     }
   }
@@ -1711,15 +1792,75 @@ function drawBuffer() {
 
   // How-to hints, until the first link.
   if (CONFIG.showHints && hintStage < 3) {
-    const text = ['tap a moving object to tag it', 'wait for it to turn blue', 'tap blue to link it'][hintStage];
-    ctx.globalAlpha = 0.6;
-    ctx.shadowBlur = 0;
+    const text = ['Tap a moving object to tag it', 'Wait: it turns blue once it has moved', 'Tap it again to link it'][hintStage];
+    ctx.globalAlpha = 0.9;
+    ctx.shadowColor = 'rgba(232,236,245,0.5)';
+    ctx.shadowBlur = 8;
     ctx.fillStyle = C.white;
-    ctx.font = font(13, 500);
+    ctx.font = font(clamp(W * 0.042, 15, 19), 600);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.fillText(text, W / 2, y - pr - 14);
   }
+  ctx.restore();
+}
+
+// First-night tutorial: a big pulsing ring and label on the object itself.
+// Step 0 picks a moving object near the middle and says TAP IT; then the one
+// you tagged says WAIT while its ring fills, then TAP AGAIN when blue.
+function pickTutorTarget() {
+  let best = null, bestD = Infinity;
+  for (const o of objects) {
+    if (o.removed || !o.entered || o.state !== 'unknown' || o.type === 'star') continue;
+    const s = skyToScreen(o.x, o.y);
+    if (s.x < 30 || s.x > W - 30 || s.y < 90 || s.y > H - 90) continue;   // well inside the screen
+    const d = Math.hypot(s.x - W / 2, s.y - H / 2);
+    if (d < bestD) { best = o; bestD = d; }
+  }
+  return best;
+}
+
+function drawTutorial() {
+  if (!CONFIG.showHints || hintStage >= 3) return;
+  let o = tutorObj;
+  if (hintStage === 0) {
+    if (!o || o.removed || o.state !== 'unknown') o = tutorObj = pickTutorTarget();
+    if (!o) return;
+  }
+  if (!o || o.removed) return;
+  const s = skyToScreen(o.x, o.y);
+  const r = sizePx(TYPE_CFG[o.type]);
+  const col = hintStage === 0 ? C.white : hintStage === 1 ? C.yellow : C.blue;
+  const label = hintStage === 0 ? 'TAP IT' : hintStage === 1 ? 'WAIT…' : 'TAP AGAIN!';
+  const pulse = 0.5 + 0.5 * Math.sin(clock * 6);
+  ctx.save();
+  ctx.strokeStyle = col;
+  ctx.fillStyle = col;
+  ctx.shadowColor = col;
+  ctx.shadowBlur = 14;
+  // Pulsing ring around it (not while waiting: its own progress ring shows then).
+  if (hintStage !== 1) {
+    ctx.lineWidth = 3;
+    ctx.globalAlpha = 0.55 + 0.45 * pulse;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r + 16 + pulse * 8, 0, TAU);
+    ctx.stroke();
+  }
+  // Label with a little arrow pointing down at it. Kept on screen.
+  const fs = clamp(W * 0.055, 20, 28);
+  const lx = clamp(s.x, 70, W - 70);
+  const ly = Math.max(s.y - r - 44, safe.top + 110);
+  ctx.globalAlpha = 1;
+  ctx.font = font(fs, 700);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(label, lx, ly);
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  const ay = ly + 6, by = Math.min(s.y - r - 12, ay + 26);
+  ctx.moveTo(s.x, ay); ctx.lineTo(s.x, by);
+  ctx.moveTo(s.x - 6, by - 7); ctx.lineTo(s.x, by); ctx.lineTo(s.x + 6, by - 7);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -1730,6 +1871,7 @@ function render() {
   drawNeoWarnings();
   drawPopups();
   drawDamageFlash();
+  drawTutorial();
   drawHud();
 }
 
@@ -1867,6 +2009,13 @@ document.getElementById('aboutClose').addEventListener('click', () => aboutEl.cl
    INPUT
    Pointer events cover mouse, touch and pen with one code path.
    ========================================================================== */
+// On iPhone a touch's pointerdown doesn't count as a tap that may start
+// audio; the touchend and click that follow do. So every finished tap
+// anywhere wakes the audio if the phone has suspended it.
+for (const ev of ['touchend', 'pointerup', 'click']) {
+  document.addEventListener(ev, () => Sound.unlock(), { passive: true, capture: true });
+}
+
 canvas.addEventListener('pointerdown', e => {
   if (mode !== 'playing') return;
   e.preventDefault();
