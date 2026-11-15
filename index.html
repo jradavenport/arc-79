@@ -60,7 +60,13 @@
     font-size: clamp(44px, 14vw, 76px);
     letter-spacing: 0.14em;
     font-weight: 700;
-    text-shadow: 0 0 18px rgba(232, 236, 245, 0.45);
+    /* The palette as a smooth top-to-bottom gradient: white (unknown) →
+       yellow (tagged) → turquoise (ready). */
+    background: linear-gradient(180deg, #e8ecf5 25%, #FFDB78 50%, #00BABC 75%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 0 12px rgba(232, 236, 245, 0.3));
   }
   .sub { margin: 4px 0 28px; opacity: 0.6; font-size: 14px; letter-spacing: 0.08em; }
   .rules { list-style: none; padding: 0; margin: 0 auto 36px; text-align: left; display: inline-block; font-size: 15px; line-height: 1.5; }
@@ -70,7 +76,20 @@
   .dot.yellow { background: #FFDB78; box-shadow: 0 0 8px #FFDB78; }
   .dot.blue   { background: #00BABC; box-shadow: 0 0 8px #00BABC; }
   .note { font-size: 13px; opacity: 0.6; line-height: 1.5; margin: 0 0 30px; }
-  .cta { font-size: 18px; letter-spacing: 0.2em; animation: blink 1.4s ease-in-out infinite; }
+  /* Start button: only this starts the game, not the whole screen. */
+  button.cta {
+    font-size: 18px;
+    letter-spacing: 0.2em;
+    color: #e8ecf5;
+    background: transparent;
+    box-shadow: none;
+    border: 1.5px solid rgba(232, 236, 245, 0.4);
+    padding: 16px 32px;
+    min-width: 240px;
+  }
+  button.cta span { animation: blink 1.4s ease-in-out infinite; }
+  #title { cursor: default; }
+  #title .about-link { margin-top: 48px; }
   @keyframes blink { 50% { opacity: 0.25; } }
 
   .summary .label { font-size: 13px; letter-spacing: 0.2em; opacity: 0.6; }
@@ -185,7 +204,7 @@
       <li><span class="dot yellow"></span>Wait while it traces an arc</li>
       <li><span class="dot blue"></span>Tap it again to link it</li>
     </ul>
-    <div class="cta">TAP TO START</div>
+    <button class="cta" id="startBtn"><span>TAP TO START</span></button><br>
     <a class="about-link" data-about>ABOUT</a>
     <div class="version" id="version"></div>
   </div>
@@ -236,7 +255,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.17';
+const VERSION = 'v0.20';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -1816,7 +1835,7 @@ function showGameOver() {
   again.wire();
 }
 
-titleEl.addEventListener('click', () => {
+document.getElementById('startBtn').addEventListener('click', () => {
   Sound.unlock();
   startRun();
 });
