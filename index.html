@@ -98,6 +98,52 @@
     touch-action: manipulation;
   }
   button:disabled { opacity: 0.3; }
+  button.secondary {
+    color: #e8ecf5;
+    background: transparent;
+    box-shadow: none;
+    border: 1.5px solid rgba(232, 236, 245, 0.45);
+  }
+
+  /* ---- Pause button (top centre, during play) ---- */
+  #pauseBtn {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 12px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 50%;
+    background: transparent;
+    border: 1.5px solid rgba(232, 236, 245, 0.35);
+    box-shadow: none;
+    color: rgba(232, 236, 245, 0.75);
+    font-size: 13px;
+    letter-spacing: 0;
+  }
+  #pauseBtn.hidden { display: none; }
+
+  /* ---- Pause menu and About screen ---- */
+  .menu { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 28px; }
+  .menu button { min-width: 220px; }
+  .label { font-size: 13px; letter-spacing: 0.2em; opacity: 0.6; }
+  .about-link {
+    display: inline-block;
+    margin-top: 22px;
+    padding: 8px 12px;           /* bigger tap area than the text */
+    font-size: 13px;
+    letter-spacing: 0.2em;
+    color: rgba(232, 236, 245, 0.6);
+    text-decoration: underline;
+    text-underline-offset: 4px;
+    cursor: pointer;
+  }
+  #about { z-index: 10; background: #03050b; align-items: flex-start; overflow-y: auto; cursor: default; }
+  #about .panel { text-align: left; margin: auto 0; }
+  #about h2 { font-size: 22px; letter-spacing: 0.12em; margin: 0 0 18px; }
+  #about p { font-size: 15px; line-height: 1.6; opacity: 0.85; margin: 0 0 14px; }
+  #about .menu { margin-top: 28px; }
 </style>
 </head>
 <body>
@@ -113,11 +159,38 @@
       <li><span class="dot blue"></span>Tap it again to link it</li>
     </ul>
     <div class="cta">TAP TO START</div>
+    <a class="about-link" data-about>ABOUT</a>
   </div>
 </div>
 
 <div id="summary" class="overlay hidden" style="cursor:default">
   <div class="panel summary" id="summaryPanel"></div>
+</div>
+
+<button id="pauseBtn" class="hidden" aria-label="Pause">❚❚</button>
+
+<div id="pause" class="overlay hidden" style="cursor:default">
+  <div class="panel">
+    <div class="label">PAUSED</div>
+    <div class="menu">
+      <button id="resumeBtn">RESUME</button>
+      <button id="restartBtn" class="secondary">RESTART</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==========================================================================
+     ABOUT SCREEN: write the science notes here. Plain HTML: each paragraph
+     in its own <p>...</p>. Links work too: <a href="https://...">text</a>
+     ========================================================================== -->
+<div id="about" class="overlay hidden">
+  <div class="panel">
+    <h2>ABOUT ARC-79</h2>
+    <p>Science notes coming soon.</p>
+    <div class="menu">
+      <button id="aboutClose" class="secondary">BACK</button>
+    </div>
+  </div>
 </div>
 
 <noscript><p style="padding:24px">Arc-79 needs JavaScript.</p></noscript>
@@ -170,8 +243,9 @@ const CONFIG = {
   mainBelt: {
     speedMin: 0.035,          // slowest (≈2.9 s wait with arcDistance 0.10)
     speedMax: 0.067,          // fastest (≈1.5 s wait)
-    curveChance: 0.4,         // share of asteroids that follow a curved (quadratic) path
-    curveMax: 0.03,           // strongest sideways pull, as a fraction of speed per second
+    curveChance: 0.4,         // share of asteroids that follow a curved (quadratic) path; the rest go straight
+    curveMin: 0.04,           // gentlest sideways pull on a curved one, as a fraction of its speed per second
+    curveMax: 0.10,           // strongest pull. At 0.10 its path bends about 45° over 10 s
     points: 10,
     size: 0.011, sizeMinPx: 7, sizeMaxPx: 14,   // drawn radius: fraction of width, clamped to pixels
   },
@@ -465,13 +539,41 @@ function startNight(number) {
   mode = 'playing';
   titleEl.classList.add('hidden');
   summaryEl.classList.add('hidden');
+  pauseEl.classList.add('hidden');
+  pauseBtn.classList.remove('hidden');
 }
 
 function endNight() {
   mode = 'summary';
   objects = [];
   slots.fill(null);
+  pauseBtn.classList.add('hidden');
   showSummary();
+}
+
+// Back to the start screen, dropping the current run.
+function goToTitle() {
+  mode = 'title';
+  objects = [];
+  slots.fill(null);
+  pauseEl.classList.add('hidden');
+  pauseBtn.classList.add('hidden');
+  summaryEl.classList.add('hidden');
+  titleEl.classList.remove('hidden');
+}
+
+// Pausing freezes everything, the star field included, so nothing drifts.
+function pauseGame() {
+  if (mode !== 'playing') return;
+  mode = 'paused';
+  pauseBtn.classList.add('hidden');
+  pauseEl.classList.remove('hidden');
+}
+function resumeGame() {
+  if (mode !== 'paused') return;
+  mode = 'playing';
+  pauseEl.classList.add('hidden');
+  pauseBtn.classList.remove('hidden');
 }
 
 
@@ -548,7 +650,7 @@ function spawnMainBelt() {
   const o = spawnMover('mainBelt', speed, 0.15);
   if (Math.random() < c.curveChance) {
     // Constant sideways pull gives a gentle quadratic curve.
-    const k = rand(-c.curveMax, c.curveMax);
+    const k = rand(c.curveMin, c.curveMax) * (Math.random() < 0.5 ? -1 : 1);   // bends left or right
     o.ax = -o.vy * k;
     o.ay = o.vx * k;
   }
@@ -827,7 +929,7 @@ function stateColor(o) {
 // How far into dawn we are (0 = night, 1 = full dawn).
 function dawnAmount() {
   const d = CONFIG.dawn;
-  if (!d.enabled || mode !== 'playing') return 0;
+  if (!d.enabled || (mode !== 'playing' && mode !== 'paused')) return 0;
   return clamp((night.t - (CONFIG.nightLength - d.duration)) / d.duration, 0, 1);
 }
 
@@ -1142,7 +1244,7 @@ function drawBuffer() {
 
 function render() {
   drawSky();
-  if (mode !== 'playing') return;
+  if (mode !== 'playing' && mode !== 'paused') return;
   for (const o of objects) drawObject(o);
   drawNeoWarnings();
   drawPopups();
@@ -1154,6 +1256,9 @@ function render() {
    SCREENS
    ========================================================================== */
 const titleEl = document.getElementById('title');
+const pauseEl = document.getElementById('pause');
+const pauseBtn = document.getElementById('pauseBtn');
+const aboutEl = document.getElementById('about');
 const summaryEl = document.getElementById('summary');
 const summaryPanel = document.getElementById('summaryPanel');
 
@@ -1173,7 +1278,8 @@ function showSummary() {
       <tr class="gap bad"><td>Lost arcs</td><td class="n">${s.lost}</td></tr>
       <tr class="bad"><td>Stars tagged</td><td class="n">${s.starsTagged}</td></tr>
     </table>
-    <button id="again" disabled>PLAY AGAIN</button>`;
+    <button id="again" disabled>PLAY AGAIN</button>
+    <br><a class="about-link" data-about>ABOUT</a>`;
   summaryEl.classList.remove('hidden');
   // Short delay so a frantic last tap doesn't skip the summary.
   const btn = document.getElementById('again');
@@ -1185,6 +1291,26 @@ titleEl.addEventListener('click', () => {
   Sound.unlock();
   startNight(1);
 });
+
+// Pause menu.
+pauseBtn.addEventListener('click', pauseGame);
+document.getElementById('resumeBtn').addEventListener('click', resumeGame);
+// Restart abandons the whole run and goes back to the start screen.
+document.getElementById('restartBtn').addEventListener('click', goToTitle);
+// Leaving the tab or locking the phone pauses the night.
+document.addEventListener('visibilitychange', () => { if (document.hidden) pauseGame(); });
+
+// About screen: opens on top of the start or summary screen; BACK closes it.
+// Any element with a data-about attribute opens it (the summary is rebuilt
+// each night, so this listens on the whole page).
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-about]')) {
+    e.stopPropagation();          // don't also start the night from the title screen
+    aboutEl.classList.remove('hidden');
+    aboutEl.scrollTop = 0;
+  }
+}, true);
+document.getElementById('aboutClose').addEventListener('click', () => aboutEl.classList.add('hidden'));
 
 
 /* ==========================================================================
@@ -1210,8 +1336,10 @@ function frame(now) {
   const dt = clamp((now - last) / 1000, 0, 0.05);
   last = now;
   clock += dt;
-  updateCamera(dt);
-  updateFieldStars();
+  if (mode !== 'paused') {
+    updateCamera(dt);
+    updateFieldStars();
+  }
   if (mode === 'playing') updateNight(dt);
   render();
   requestAnimationFrame(frame);
