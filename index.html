@@ -23,7 +23,7 @@
     -webkit-touch-callout: none;
     -webkit-tap-highlight-color: transparent;
   }
-  canvas {
+  #sky {
     position: fixed;
     inset: 0;
     width: 100%;
@@ -70,11 +70,8 @@
   }
   .sub { margin: 4px 0 28px; opacity: 0.6; font-size: 14px; letter-spacing: 0.08em; }
   .rules { list-style: none; padding: 0; margin: 0 auto 36px; text-align: left; display: inline-block; font-size: 15px; line-height: 1.5; }
-  .rules li { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
-  .dot { flex: none; width: 12px; height: 12px; border-radius: 50%; }
-  .dot.white  { background: #e8ecf5; box-shadow: 0 0 8px #e8ecf5; }
-  .dot.yellow { background: #FFDB78; box-shadow: 0 0 8px #FFDB78; }
-  .dot.blue   { background: #00BABC; box-shadow: 0 0 8px #00BABC; }
+  .rules li { display: flex; align-items: center; gap: 14px; margin: 4px 0; font-size: 16px; }
+  .icon { flex: none; width: 40px; height: 40px; }
   .note { font-size: 13px; opacity: 0.6; line-height: 1.5; margin: 0 0 30px; }
   /* Start button: only this starts the game, not the whole screen. */
   button.cta {
@@ -200,10 +197,13 @@
 <div id="title" class="overlay">
   <div class="panel">
     <h1>ARC-79</h1>
+    <!-- Each icon is a small canvas the game draws and animates (see drawTitleIcons). -->
     <ul class="rules">
-      <li><span class="dot white"></span>Tap a moving object to tag it</li>
-      <li><span class="dot yellow"></span>Wait while it traces an arc</li>
-      <li><span class="dot blue"></span>Tap it again to link it</li>
+      <li><canvas class="icon" data-icon="tag"></canvas>Tap a moving asteroid</li>
+      <li><canvas class="icon" data-icon="wait"></canvas>Wait while it moves</li>
+      <li><canvas class="icon" data-icon="link"></canvas>Tap it again when it's blue</li>
+      <li><canvas class="icon" data-icon="comet"></canvas>Comets are worth more</li>
+      <li><canvas class="icon" data-icon="star"></canvas>Don't tap the stars</li>
     </ul>
     <button class="cta" id="startBtn"><span>TAP TO START</span></button><br>
     <a class="about-link" data-about>ABOUT</a>
@@ -232,7 +232,9 @@
       <button id="soundBtn" class="secondary">SOUND: ON</button>
       <button id="restartBtn" class="secondary">RESTART</button>
     </div>
-    <div class="diag" id="audioInfo"></div>
+    <!-- Diagnostics line (version, frame rate, audio). Hidden for playtesting;
+         to bring it back, uncomment this and the matching line in pauseGame().
+    <div class="diag" id="audioInfo"></div> -->
   </div>
 </div>
 
@@ -257,7 +259,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.27';
+const VERSION = 'v0.31';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -335,8 +337,11 @@ const CONFIG = {
 
   // ---- Object types ------------------------------------------------------
   mainBelt: {
-    speedMin: 0.035,          // slowest (≈2.9 s wait with arcDistance 0.10)
-    speedMax: 0.067,          // fastest (≈1.5 s wait)
+    speedMin: 0.035,          // slowest
+    speedMax: 0.067,          // fastest
+    waitSlowest: 2.9,         // seconds to turn blue for the slowest asteroid...
+    waitFastest: 1.0,         // ...and the fastest; in between scales with speed. (Each asteroid's
+                              //   arc distance is set to match, so faster ones need a shorter arc.)
     curveChance: 0.4,         // share of asteroids that follow a curved (quadratic) path; the rest go straight
     curveMin: 0.04,           // gentlest sideways pull on a curved one, as a fraction of its speed per second
     curveMax: 0.10,           // strongest pull. At 0.10 its path bends about 45° over 10 s
@@ -508,6 +513,9 @@ const Sound = (() => {
   // media playback, which Web Audio then shares. The silent clip is made in
   // code (a tiny WAV of zeros), so there is still no audio file.
   let silentLoop = null;
+  // Add ?sound=ambient to the page address to test without the silent-switch
+  // override (e.g. to compare sound delay on a phone). Not saved anywhere.
+  const soundMode = new URLSearchParams(location.search).get('sound') || 'playback';
   function playThroughSilentSwitch() {
     if (navigator.audioSession) {
       try { navigator.audioSession.type = 'playback'; } catch (e) { /* not supported */ }
@@ -532,7 +540,12 @@ const Sound = (() => {
   return {
     unlock() {
       if (!S.enabled) return;
-      if (S.ignoreSilentSwitch) playThroughSilentSwitch();
+      if (soundMode === 'ambient') {
+        // Test mode (?sound=ambient): ordinary web sound that follows the silent switch.
+        if (navigator.audioSession) { try { navigator.audioSession.type = 'ambient'; } catch (e) {} }
+      } else if (S.ignoreSilentSwitch) {
+        playThroughSilentSwitch();
+      }
       if (!actx) {
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) return;
@@ -712,7 +725,7 @@ function font(px, weight = 600) {
    CANVAS AND SCREEN SIZE
    ========================================================================== */
 const canvas = document.getElementById('sky');
-const ctx = canvas.getContext('2d');
+let ctx = canvas.getContext('2d');   // `let`: the start screen's icons briefly borrow it (drawTitleIcons)
 const safeProbe = document.getElementById('safe');
 
 let W = 0, H = 0, DPR = 1;                       // CSS pixel size of the window
@@ -733,6 +746,7 @@ function resize() {
   safe.left = parseFloat(cs.paddingLeft) || 0;
 
   seedFieldStars();
+  sizeTitleIcons();
 }
 
 
@@ -998,7 +1012,9 @@ function pauseGame() {
   if (mode !== 'playing') return;
   mode = 'paused';
   setHudButtons(false);
-  document.getElementById('audioInfo').textContent = `${VERSION} · ${Sound.info()}`;
+  // Diagnostics line, hidden for playtesting (uncomment with the div in the pause menu):
+  // document.getElementById('audioInfo').textContent =
+  //   `${VERSION} · ${perf.fps} fps, worst frame ${perf.worstMs} ms · ${Sound.info()}`;
   pauseEl.classList.remove('hidden');
 }
 function resumeGame() {
@@ -1083,7 +1099,12 @@ function spawnMover(type, speed, inner) {
 function spawnMainBelt() {
   const c = CONFIG.mainBelt;
   const speed = rand(c.speedMin, c.speedMax);
+  // Faster asteroids turn blue sooner: pick the wait from its speed, then the
+  // arc distance that gives that wait.
+  const f = (speed - c.speedMin) / (c.speedMax - c.speedMin);
+  const arc = speed * (c.waitSlowest + (c.waitFastest - c.waitSlowest) * f);
   const o = spawnMover('mainBelt', speed, 0.15);
+  o.arc = arc;
   if (Math.random() < c.curveChance) {
     // Constant sideways pull gives a gentle quadratic curve.
     const k = rand(c.curveMin, c.curveMax) * (Math.random() < 0.5 ? -1 : 1);   // bends left or right
@@ -1240,7 +1261,7 @@ function freeSlot(o) {
 // Each type's config block, and its points and arc distance (a type can override the global arc).
 const TYPE_CFG = { mainBelt: CONFIG.mainBelt, comet: CONFIG.comet, neo: CONFIG.neo, iso: CONFIG.iso, star: CONFIG.star };
 const pointsFor = o => TYPE_CFG[o.type].points;
-const arcFor = o => TYPE_CFG[o.type].arcDistance ?? CONFIG.arcDistance;
+const arcFor = o => o.arc ?? TYPE_CFG[o.type].arcDistance ?? CONFIG.arcDistance;
 
 function tagObject(o) {
   if (!takeSlot(o)) {
@@ -1809,7 +1830,8 @@ function drawBuffer() {
 
   // How-to hints, until the first link.
   if (CONFIG.showHints && hintStage < 3) {
-    const text = ['Tap a moving object to tag it', 'Wait: it turns blue once it has moved', 'Tap it again to link it'][hintStage];
+    // Same words as the start screen.
+    const text = ['Tap a moving asteroid', 'Wait while it moves', "Tap it again when it's blue"][hintStage];
     ctx.globalAlpha = 0.9;
     ctx.shadowColor = 'rgba(232,236,245,0.5)';
     ctx.shadowBlur = 8;
@@ -1890,6 +1912,78 @@ function render() {
   drawDamageFlash();
   drawTutorial();
   drawHud();
+}
+
+
+/* ==========================================================================
+   START SCREEN ICONS
+   Real game objects, drawn with the game's own drawing code into small
+   canvases next to each instruction, and animated:
+     tag   white asteroid with a "tap here" ripple
+     wait  yellow asteroid whose progress ring fills, over and over
+     link  turquoise asteroid, pulsing
+     comet turquoise comet, pulsing
+     star  a flickering variable star
+   ========================================================================== */
+const titleIcons = [...document.querySelectorAll('canvas.icon')]
+  .map(c => ({ c, kind: c.dataset.icon, x: c.getContext('2d') }));
+const ICON = 40;                                                   // CSS px
+const iconRock = { shape: [0.95, 0.72, 1, 0.8, 0.92, 0.7, 0.98, 0.78, 0.9], rot: 0 };
+const iconStar = { flickerPeriod: 0.9, flickerPhase: 1.3 };
+const iconComet = { vx: 0, vy: 0, tailJitter: [0.3, -0.6, 0.8, -0.2, 0.5, -0.9, 0.4, -0.4, 0.7] };
+
+function sizeTitleIcons() {
+  const d = Math.min(window.devicePixelRatio || 1, 3);
+  for (const i of titleIcons) {
+    i.c.width = ICON * d;
+    i.c.height = ICON * d;
+    i.x.setTransform(d, 0, 0, d, 0, 0);
+  }
+}
+
+function drawTitleIcons() {
+  const main = ctx;
+  const s = { x: ICON / 2, y: ICON / 2 }, r = 8;
+  iconRock.rot = clock * 0.6;
+  for (const i of titleIcons) {
+    ctx = i.x;
+    ctx.clearRect(0, 0, ICON, ICON);
+    ctx.save();
+    if (i.kind === 'star') {
+      ctx.shadowColor = C.white;
+      ctx.shadowBlur = 6;
+      drawStar(iconStar, s, 3.5, C.white);
+    } else if (i.kind === 'comet') {
+      // A turquoise (ready) comet heading up and to the right, tail trailing behind.
+      const d = screenDirToSky(1, -0.55);           // drawComet points the tail against this
+      iconComet.vx = d.x;
+      iconComet.vy = d.y;
+      ctx.shadowColor = C.blue;
+      ctx.shadowBlur = 9 + 6 * Math.sin(clock * 6);
+      drawComet(iconComet, { x: 30, y: 12 }, 2.6, C.blue);
+    } else {
+      const col = i.kind === 'tag' ? C.white : i.kind === 'wait' ? C.yellow : C.blue;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = i.kind === 'link' ? 9 + 6 * Math.sin(clock * 6) : 6;
+      drawMainBelt(iconRock, s, r, col);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = col;
+      if (i.kind === 'wait') {                       // progress ring fills, holds, repeats
+        const prog = Math.min(1, (clock % 2.6) / 2.2);
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r + 7, -Math.PI / 2, -Math.PI / 2 + prog * TAU);
+        ctx.stroke();
+      } else if (i.kind === 'tag') {                 // a ripple, like a tap
+        const p = (clock % 1.6) / 1.6;
+        ctx.globalAlpha = 1 - p;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, r + 2 + p * 9, 0, TAU);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+  ctx = main;
 }
 
 
@@ -2048,7 +2142,20 @@ document.addEventListener('gesturestart', e => e.preventDefault());   // iOS pin
    Uses elapsed time, so speed is the same at 60 Hz, 120 Hz or a slow phone.
    ========================================================================== */
 let last = performance.now();
+// Frame timing for the diagnostics line: average frame rate and the worst
+// frame over the last few seconds. Slow frames delay taps (and their sounds).
+const perf = { frames: 0, sum: 0, worst: 0, since: 0, fps: 0, worstMs: 0 };
+function trackFrame(ms, now) {
+  perf.frames++; perf.sum += ms; perf.worst = Math.max(perf.worst, ms);
+  if (now - perf.since > 3000) {
+    perf.fps = Math.round(1000 * perf.frames / perf.sum);
+    perf.worstMs = Math.round(perf.worst);
+    perf.frames = 0; perf.sum = 0; perf.worst = 0; perf.since = now;
+  }
+}
+
 function frame(now) {
+  trackFrame(now - last, now);
   // Cap the step so a stall or a background tab doesn't jump the game ahead.
   const dt = clamp((now - last) / 1000, 0, 0.05);
   last = now;
@@ -2058,6 +2165,7 @@ function frame(now) {
     updateFieldStars();
   }
   if (mode === 'playing') updateNight(dt);
+  if (mode === 'title') drawTitleIcons();
   render();
   requestAnimationFrame(frame);
 }
