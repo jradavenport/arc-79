@@ -259,7 +259,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.31';
+const VERSION = 'v0.35';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -383,6 +383,26 @@ const CONFIG = {
     damage: 2,                // health lost if it gets away
     size: 0.012, sizeMinPx: 7, sizeMaxPx: 13,
   },
+  ufo: {                      // rare bonus target: unannounced, erratic, no penalty if it escapes
+    firstNight: 5,            // never appears before this night, and always appears on it
+    chanceAfter: 0.5,         // chance of one on the night after firstNight...
+    chanceGrowth: 0.1,        // ...rising this much each night after that...
+    chanceMax: 0.9,           // ...up to this (at most one UFO a night)
+    points: 100,              // same as an interstellar object
+    restores: 1,              // health given back when linked, if below max ("OBSERVING BONUS")
+    cruiseTime: [2, 4],       // seconds of calm, asteroid-like drift first (easy to tag)
+    cruiseSpeed: [0.035, 0.06],
+    zigTime: [3, 5],          // then seconds of zigzagging...
+    zigEvery: [0.45, 0.8],    // ...a sudden change of heading and speed every this-many seconds
+    zigTurn: [60, 120],       // degrees turned at each zig (left or right)
+    zigSpeed: [0.02, 0.26],   // new speed after each zig, from nearly stopped to fast
+    exitSpeed: 0.6,           // then it bolts for the nearest edge at this speed
+    // Tag rules (different from everything else): it turns blue once it has
+    // FLOWN arcDistance since the tag (path length, not straight line) AND
+    // made at least one zig. A second zig turns it white again (slot freed).
+    arcDistance: 0.12,
+    size: 0.011, sizeMinPx: 7, sizeMaxPx: 12,   // outer radius of the disc
+  },
   star: {                     // variable star (the decoy): fixed to the star field, never turns blue
     clearTime: 20,            // seconds after tagging before it turns white again and frees its slot
     points: 0,
@@ -429,7 +449,7 @@ const CONFIG = {
     ready: { octave: 1, length: 0.9,  volume: 0.18 },   // soft bell, an octave above its tag note
     link:  {
       octave: 0,              // the run starts on the object's own note, in this octave (0 = same as its tag)
-      notes: { mainBelt: 2, comet: 3 },                 // length of the rising run, by type
+      notes: { mainBelt: 2, comet: 3, ufo: 4 },         // length of the rising run, by type
       gap: 0.065,             // seconds between notes in the run
       length: 0.35,           // how long each note rings
       volume: 0.24,
@@ -871,6 +891,7 @@ let popups = [];           // floating "+10" texts
 let banners = [];          // short centre-screen messages
 let pipShake = 0;          // buffer shake after a tap with no free slot (1 → 0)
 let damageFlash = 0;       // red edge flash after losing health (1 → 0)
+let healFlash = 0;         // turquoise glow on a health pip just given back (1 → 0)
 let hintStage = 0;         // first-night tutorial: 0 tag, 1 wait, 2 link, 3 done
 let tutorObj = null;       // the object the tutorial is pointing at
 let nextId = 1;
@@ -896,6 +917,15 @@ function nightDifficulty(n) {
   return d;
 }
 
+// Chance of a UFO on night n: never before firstNight, certain on it, then
+// chanceAfter rising by chanceGrowth a night, capped at chanceMax.
+function ufoChance(n) {
+  const u = CONFIG.ufo;
+  if (n < u.firstNight) return 0;
+  if (n === u.firstNight) return 1;
+  return Math.min(u.chanceMax, u.chanceAfter + u.chanceGrowth * (n - u.firstNight - 1));
+}
+
 function makeNight(number) {
   const diff = nightDifficulty(number);
   return {
@@ -903,6 +933,8 @@ function makeNight(number) {
     diff,
     t: 0,                  // seconds into the night
     firstSpawned: false,
+    // Maybe a UFO tonight, at an unannounced moment that leaves it time to finish its routine.
+    ufoAt: Math.random() < ufoChance(number) ? rand(12, CONFIG.nightLength - 14) : null,
     criticals: planCriticals(diff, number),   // near-Earth and interstellar objects, in arrival order
     gameOverIn: null,      // counts down to the game-over screen once health hits zero
   };
@@ -911,7 +943,8 @@ function makeNight(number) {
 function newStats() {
   return {
     score: 0,
-    linked: { mainBelt: 0, comet: 0, neo: 0, iso: 0 },
+    linked: { mainBelt: 0, comet: 0, neo: 0, iso: 0, ufo: 0 },
+    ufoSeen: 0,
     lost: 0,               // tagged objects that left the field before linking
     starsTagged: 0,
     neoCaught: 0,
@@ -928,7 +961,8 @@ function startRun() {
     health: CONFIG.startHealth,
     score: 0,              // points from finished nights (the HUD adds the current night)
     nightsCompleted: 0,
-    linked: { mainBelt: 0, comet: 0 },
+    linked: { mainBelt: 0, comet: 0, ufo: 0 },
+    ufoSeen: 0,
     neoCaught: 0,
     neoMissed: 0,
     isoCaught: 0,
@@ -948,6 +982,7 @@ function startNight(number) {
   banners = [];
   pipShake = 0;
   damageFlash = 0;
+  healFlash = 0;
   hintStage = number === 1 ? 0 : 3;     // how-to hints on the first night only
   tutorObj = null;
   if (number > 1) addBanner(`NIGHT ${number}`, 3);   // no hint of how many critical targets are coming
@@ -963,6 +998,8 @@ function addNightToRun() {
   run.score += stats.score;
   run.linked.mainBelt += stats.linked.mainBelt;
   run.linked.comet += stats.linked.comet;
+  run.linked.ufo += stats.linked.ufo;
+  run.ufoSeen += stats.ufoSeen;
   run.neoCaught += stats.neoCaught;
   run.neoMissed += stats.neoMissed;
   run.isoCaught += stats.isoCaught;
@@ -1153,6 +1190,67 @@ function spawnRandom() {
 
 
 /* ==========================================================================
+   UFO
+   Enters like an asteroid, cruises a few seconds, zigzags, then bolts.
+   ========================================================================== */
+function spawnUfo() {
+  const c = CONFIG.ufo;
+  const o = spawnMover('ufo', rand(...c.cruiseSpeed), 0.2);
+  o.phase = 'cruise';
+  o.phaseLeft = rand(...c.cruiseTime);
+  o.nextZig = 0;
+  o.rot = 0;
+  o.spin = rand(-2.5, 2.5);
+  stats.ufoSeen++;
+  objects.push(o);
+}
+
+// A sudden change of heading and speed (also used for the final bolt).
+function ufoZig(o, heading, speed) {
+  o.vx = Math.cos(heading) * speed;
+  o.vy = Math.sin(heading) * speed;
+  o.spin = rand(-4, 4);
+  if (o.state === 'tagged' || o.state === 'ready') {
+    o.zigsSinceTag++;
+    if (o.zigsSinceTag >= 2) {             // zigged twice since the tag: it slips away
+      o.state = 'unknown';
+      o.flash = 1;
+      freeSlot(o);
+    }
+  }
+}
+
+function updateUfo(o, dt) {
+  const c = CONFIG.ufo;
+  o.phaseLeft -= dt;
+  if (o.phase === 'cruise' && o.phaseLeft <= 0) {
+    o.phase = 'zig';
+    o.phaseLeft = rand(...c.zigTime);
+    o.nextZig = 0;
+  }
+  if (o.phase === 'zig') {
+    o.nextZig -= dt;
+    if (o.nextZig <= 0) {
+      const turn = rand(...c.zigTurn) * Math.PI / 180 * (Math.random() < 0.5 ? -1 : 1);
+      ufoZig(o, Math.atan2(o.vy, o.vx) + turn, rand(...c.zigSpeed));
+      o.nextZig = rand(...c.zigEvery);
+    }
+    if (o.phaseLeft <= 0) {
+      // Bolt for the nearest edge (worked out on screen, then turned into sky terms).
+      o.phase = 'exit';
+      const s = skyToScreen(o.x, o.y);
+      const exits = [[-1, 0, s.x], [1, 0, W - s.x], [0, -1, s.y], [0, 1, H - s.y]];
+      exits.sort((a, b) => a[2] - b[2]);
+      const d = screenDirToSky(exits[0][0], exits[0][1]);
+      ufoZig(o, Math.atan2(d.y, d.x), c.exitSpeed);
+    }
+  }
+  // Distance flown since the tag, for its turn-blue rule.
+  if (o.state === 'tagged' || o.state === 'ready') o.flown += Math.hypot(o.vx, o.vy) * dt;
+}
+
+
+/* ==========================================================================
    CRITICAL TARGETS (near-Earth objects)
    Arrival times are picked at the start of the night. The path is picked
    when the warning starts, so the warning marker points at the real entry.
@@ -1259,7 +1357,7 @@ function freeSlot(o) {
 }
 
 // Each type's config block, and its points and arc distance (a type can override the global arc).
-const TYPE_CFG = { mainBelt: CONFIG.mainBelt, comet: CONFIG.comet, neo: CONFIG.neo, iso: CONFIG.iso, star: CONFIG.star };
+const TYPE_CFG = { mainBelt: CONFIG.mainBelt, comet: CONFIG.comet, neo: CONFIG.neo, iso: CONFIG.iso, ufo: CONFIG.ufo, star: CONFIG.star };
 const pointsFor = o => TYPE_CFG[o.type].points;
 const arcFor = o => o.arc ?? TYPE_CFG[o.type].arcDistance ?? CONFIG.arcDistance;
 
@@ -1270,6 +1368,8 @@ function tagObject(o) {
     return;
   }
   o.state = 'tagged';
+  o.flown = 0;              // UFO only: path length since the tag
+  o.zigsSinceTag = 0;       // UFO only
   o.tagX = o.x;
   o.tagY = o.y;
   o.tagTime = night.t;
@@ -1292,6 +1392,12 @@ function linkObject(o) {
   if (o.type === 'neo') stats.neoCaught++;
   if (o.type === 'iso') stats.isoCaught++;
   if (isCritical(o)) addBanner(`${CRITICAL_NAME[o.type]} CATALOGED`, 2);
+  // A UFO gives back health (the only way to, now clean nights don't).
+  if (o.type === 'ufo' && run.health < CONFIG.maxHealth) {
+    run.health = Math.min(CONFIG.maxHealth, run.health + CONFIG.ufo.restores);
+    healFlash = 1;
+    addBanner('OBSERVING BONUS', 2.5);
+  }
   const s = skyToScreen(o.x, o.y);
   popups.push({ x: s.x, y: s.y, text: `+${pts}`, t: 0 });
   if (hintStage === 2 && o === tutorObj) {
@@ -1311,7 +1417,7 @@ function objectLeft(o) {
   }
   if (o.state === 'tagged' || o.state === 'ready') {
     freeSlot(o);
-    if (o.type !== 'star') stats.lost++;
+    if (o.type !== 'star' && o.type !== 'ufo') stats.lost++;   // a UFO getting away costs nothing
   }
   if (isCritical(o) && o.state !== 'linked') {
     if (o.type === 'neo') stats.neoMissed++;
@@ -1360,6 +1466,7 @@ function handleTap(px, py) {
    ========================================================================== */
 function updateObject(o, dt) {
   o.age += dt;
+  if (o.type === 'ufo' && o.state !== 'linked') updateUfo(o, dt);
   o.vx += o.ax * dt;
   o.vy += o.ay * dt;
   o.x += o.vx * dt;
@@ -1372,8 +1479,12 @@ function updateObject(o, dt) {
   }
 
   // Tagged → ready once it has moved the arc distance against the stars.
+  // (A UFO instead needs the distance flown plus one zig since the tag.)
   if (o.state === 'tagged' && o.type !== 'star') {
-    if (Math.hypot(o.x - o.tagX, o.y - o.tagY) >= arcFor(o)) {
+    const done = o.type === 'ufo'
+      ? o.flown >= arcFor(o) && o.zigsSinceTag >= 1
+      : Math.hypot(o.x - o.tagX, o.y - o.tagY) >= arcFor(o);
+    if (done) {
       o.state = 'ready';
       o.flash = 1;
       if (hintStage === 1 && o === tutorObj) hintStage = 2;
@@ -1413,6 +1524,7 @@ function updateNight(dt) {
   }
   if (Math.random() < spawnRate(night.t) * dt) spawnRandom();
   updateCriticals();
+  if (night.ufoAt !== null && night.t >= night.ufoAt) { spawnUfo(); night.ufoAt = null; }
 
   for (const o of objects) updateObject(o, dt);
   objects = objects.filter(o => !o.removed);
@@ -1423,6 +1535,7 @@ function updateNight(dt) {
   banners = banners.filter(b => b.t < b.dur);
   pipShake = Math.max(0, pipShake - dt * 2.5);
   damageFlash = Math.max(0, damageFlash - dt * 1.5);
+  healFlash = Math.max(0, healFlash - dt * 0.8);
 
   if (night.gameOverIn !== null) {
     night.gameOverIn -= dt;
@@ -1502,7 +1615,8 @@ function drawArcTrail(o, s, r) {
   ctx.moveTo(t.x + 3, t.y - 3); ctx.lineTo(t.x - 3, t.y + 3);
   ctx.stroke();
   if (o.state === 'tagged') {
-    const prog = clamp(Math.hypot(o.x - o.tagX, o.y - o.tagY) / arcFor(o), 0, 1);
+    const moved = o.type === 'ufo' ? o.flown : Math.hypot(o.x - o.tagX, o.y - o.tagY);
+    const prog = clamp(moved / arcFor(o), 0, 1);
     ctx.globalAlpha = 0.9;
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -1576,6 +1690,34 @@ function drawNeo(o, s, r, col) {
   ctx.fillText('NEO', s.x, s.y - b - 4);
 }
 
+function drawUfo(o, s, r, col) {
+  // A disc with four triangular notches on the diagonals and a small cockpit
+  // ring in the middle, spinning (faster while it zigzags).
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  ctx.rotate(o.rot);
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1.8;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  const steps = 48, w = 0.24, depth = r * 0.42;
+  for (let i = 0; i <= steps; i++) {
+    const a = (i % steps) / steps * TAU;
+    let rr = r;
+    for (let k = 0; k < 4; k++) {
+      const d = Math.abs(((a - Math.PI / 4 - k * Math.PI / 2) % TAU + TAU * 1.5) % TAU - Math.PI);
+      if (d < w) rr = Math.min(rr, r - depth * (1 - d / w));
+    }
+    const x = Math.cos(a) * rr, y = Math.sin(a) * rr;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.3, 0, TAU);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawIso(o, s, r, col) {
   // Long, thin cigar shape pointing along its path, inside a turning dashed
   // ring, labelled. Different enough from the near-Earth object to read at a glance.
@@ -1638,6 +1780,7 @@ function drawObject(o) {
   else if (o.type === 'comet') drawComet(o, s, r, col);
   else if (o.type === 'neo') drawNeo(o, s, r, col);
   else if (o.type === 'iso') drawIso(o, s, r, col);
+  else if (o.type === 'ufo') drawUfo(o, s, r, col);
   else if (o.type === 'star') drawStar(o, s, r, col);
   ctx.restore();
 
@@ -1771,10 +1914,12 @@ function drawHealth(xRight, y) {
     ctx.lineTo(x, y + r); ctx.lineTo(x - r * 0.75, y);
     ctx.closePath();
     if (full) {
+      const justHealed = i === run.health - 1 && healFlash > 0;
+      const col = justHealed ? C.blue : C.white;
       ctx.globalAlpha = 1;
-      ctx.fillStyle = C.white;
-      ctx.shadowColor = C.white;
-      ctx.shadowBlur = 6;
+      ctx.fillStyle = col;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = justHealed ? 6 + 12 * healFlash : 6;
       ctx.fill();
     } else {
       ctx.shadowBlur = 0;
@@ -2055,6 +2200,7 @@ function showSummary() {
       <tr><td>Comets linked</td><td class="n">${s.linked.comet}</td><td class="pts">${s.linked.comet * CONFIG.comet.points}</td></tr>
       <tr><td>Near-Earth object${total === 1 ? '' : 's'}</td><td class="n">${critical}</td><td class="pts">${s.linked.neo * CONFIG.neo.points}</td></tr>
       ${isoRow}
+      ${s.ufoSeen ? `<tr><td>UFO</td><td class="n">${tally(s.linked.ufo, s.ufoSeen)}</td><td class="pts">${s.linked.ufo * CONFIG.ufo.points}</td></tr>` : ''}
       <tr class="gap bad"><td>Lost arcs</td><td class="n">${s.lost}</td></tr>
       <tr class="bad"><td>Stars tagged</td><td class="n">${s.starsTagged}</td></tr>
       <tr class="gap"><td>Health${s.restored ? ` <span class="restored">+${s.restored} clean night</span>` : ''}</td><td class="n">${healthHtml()}</td></tr>
@@ -2072,6 +2218,10 @@ function showGameOver() {
   const isoRows = run.isoCaught + run.isoMissed ? `
       <tr><td>Interstellar objects caught</td><td class="n">${run.isoCaught}</td><td class="pts">${run.isoCaught * CONFIG.iso.points}</td></tr>
       <tr class="bad"><td>Interstellar objects missed</td><td class="n">${run.isoMissed}</td></tr>` : '';
+  // Same style as the critical targets: caught (with points), then missed.
+  const ufoRows = run.ufoSeen ? `
+      <tr><td>UFOs caught</td><td class="n">${run.linked.ufo}</td><td class="pts">${run.linked.ufo * CONFIG.ufo.points}</td></tr>
+      <tr class="bad"><td>UFOs missed</td><td class="n">${run.ufoSeen - run.linked.ufo}</td></tr>` : '';
   summaryPanel.innerHTML = `
     <div class="gameover">GAME OVER</div>
     <div class="score">${run.score}</div>
@@ -2080,8 +2230,9 @@ function showGameOver() {
       <tr><td>Nights cataloged</td><td class="n">${nights}</td></tr>
       <tr class="gap"><td>Asteroids linked</td><td class="n">${run.linked.mainBelt}</td><td class="pts">${run.linked.mainBelt * CONFIG.mainBelt.points}</td></tr>
       <tr><td>Comets linked</td><td class="n">${run.linked.comet}</td><td class="pts">${run.linked.comet * CONFIG.comet.points}</td></tr>
+
       <tr><td>Near-Earth objects caught</td><td class="n">${run.neoCaught}</td><td class="pts">${run.neoCaught * CONFIG.neo.points}</td></tr>
-      <tr class="bad"><td>Near-Earth objects missed</td><td class="n">${run.neoMissed}</td></tr>${isoRows}
+      <tr class="bad"><td>Near-Earth objects missed</td><td class="n">${run.neoMissed}</td></tr>${isoRows}${ufoRows}
     </table>
     ${again.html}`;
   summaryEl.classList.remove('hidden');
