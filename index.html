@@ -139,6 +139,14 @@
   .menu { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 28px; }
   .menu button { min-width: 220px; }
   .label { font-size: 13px; letter-spacing: 0.2em; opacity: 0.6; }
+  .version {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    opacity: 0.35;
+  }
   .about-link {
     display: inline-block;
     margin-top: 22px;
@@ -171,6 +179,7 @@
     </ul>
     <div class="cta">TAP TO START</div>
     <a class="about-link" data-about>ABOUT</a>
+    <div class="version" id="version"></div>
   </div>
 </div>
 
@@ -217,6 +226,11 @@
 <script>
 'use strict';
 
+// Shown small on the start screen, so you can tell which build a phone has loaded.
+// Bump it with each change.
+const VERSION = 'v0.14';
+document.getElementById('version').textContent = VERSION;
+
 /* ==========================================================================
    CONFIG: every tunable number lives here.
 
@@ -251,17 +265,20 @@ const CONFIG = {
   // so on. Nights past the end of the table repeat the last row, plus
   // `afterTable` for each extra night.
   //   neos:        near-Earth objects that night
+  //   isos:        interstellar objects that night. A fraction is a chance of one more:
+  //                1.4 = one for sure, plus a 40% chance of a second
   //   spawn:       multiplier on the whole spawn curve (busier field = fuller buffer)
   //   neoSpeed:    multiplier on near-Earth object speed
   //   warningLead: seconds of warning before each near-Earth object enters
   //   quietStart:  seconds of calm at the start (night 1 needs it to learn; later nights barely pause)
   nights: [
-    { neos: 1, spawn: 1.00, neoSpeed: 1.00, warningLead: 1.5, quietStart: 10 },
-    { neos: 3, spawn: 1.25, neoSpeed: 1.10, warningLead: 1.2, quietStart: 3 },
-    { neos: 3, spawn: 1.40, neoSpeed: 1.18, warningLead: 1.0, quietStart: 3 },   // + the guaranteed interstellar object
+    { neos: 2, isos: 0, spawn: 1.00, neoSpeed: 1.00, warningLead: 1.5, quietStart: 10 },
+    { neos: 4, isos: 0, spawn: 1.30, neoSpeed: 1.12, warningLead: 1.2, quietStart: 3 },
+    { neos: 5, isos: 1, spawn: 1.45, neoSpeed: 1.22, warningLead: 1.0, quietStart: 3 },
   ],
-  afterTable: { neos: 1, spawn: 0.10, neoSpeed: 0.05, warningLead: -0.1 },
-  maxNeosPerNight: 6,         // cap, however far a run goes
+  afterTable: { neos: 1, isos: 0.4, spawn: 0.10, neoSpeed: 0.07, warningLead: -0.1 },
+  maxNeosPerNight: 8,         // caps, however far a run goes
+  maxIsosPerNight: 3,
   minWarningLead: 0.6,        // floor on the warning, however far a run goes
 
   // ---- Alert buffer ------------------------------------------------------
@@ -307,7 +324,7 @@ const CONFIG = {
     speedMin: 0.22,           // crosses a screen width in ≈4.5 s
     speedMax: 0.28,
     arcDistance: 0.20,        // its own arc distance (overrides the global one): ≈0.7–0.9 s to turn blue
-    minCrossTime: 3,          // its path is always on screen at least this long (re-rolled if a path is shorter)
+    minCrossTime: 2.5,        // its path is always on screen at least this long (re-rolled if a path is shorter)
     points: 90,
                               // (how many per night, and their warning, are in `nights` above)
     windowStart: 45,          // a night's only near-Earth object arrives between windowStart...
@@ -319,13 +336,12 @@ const CONFIG = {
     size: 0.012, sizeMinPx: 7, sizeMaxPx: 13,
   },
   iso: {                      // interstellar object: a rarer, faster critical target
-    firstNight: 3,            // never appears before this night
-    alwaysOnFirstNight: true, // every run that reaches firstNight meets one there
-    chancePerNight: 0.4,      // chance of one on each later night (at most one a night)
+                              // (how many per night is the `isos` column of the nights table)
     speedMin: 0.30,           // faster than a near-Earth object (also scaled by the night's neoSpeed)
     speedMax: 0.36,
     arcDistance: 0.20,        // ≈0.55–0.65 s to turn blue
-    minCrossTime: 3,          // its path is always on screen at least this long
+    minCrossTime: 2.5,        // its path is always on screen at least this long
+    warningFactor: 0.7,       // its warning is this fraction of the night's warningLead (0.7 s on night 3)
     points: 180,              // 2× a near-Earth object
     damage: 2,                // health lost if it gets away
     size: 0.012, sizeMinPx: 7, sizeMaxPx: 13,
@@ -739,11 +755,13 @@ function nightDifficulty(n) {
   if (extra > 0) {
     const g = CONFIG.afterTable;
     d.neos += g.neos * extra;
+    d.isos += g.isos * extra;
     d.spawn += g.spawn * extra;
     d.neoSpeed += g.neoSpeed * extra;
     d.warningLead += g.warningLead * extra;
   }
   d.neos = Math.min(Math.round(d.neos), CONFIG.maxNeosPerNight);
+  d.isos = Math.min(d.isos, CONFIG.maxIsosPerNight);
   d.warningLead = Math.max(d.warningLead, CONFIG.minWarningLead);
   return d;
 }
@@ -1002,10 +1020,10 @@ function spawnRandom() {
 function planCriticals(diff, number) {
   const c = CONFIG.neo;
   const types = new Array(diff.neos).fill('neo');
-  // From firstNight on, sometimes one interstellar object joins, at a random place in the order.
-  const iso = CONFIG.iso;
-  const guaranteed = number === iso.firstNight && iso.alwaysOnFirstNight;
-  if (number >= iso.firstNight && (guaranteed || Math.random() < iso.chancePerNight)) {
+  // Interstellar objects join at random places in the order. The whole part
+  // of `isos` is certain; the fraction is the chance of one more.
+  const isoCount = Math.floor(diff.isos) + (Math.random() < diff.isos % 1 ? 1 : 0);
+  for (let i = 0; i < isoCount; i++) {
     types.splice(Math.floor(Math.random() * (types.length + 1)), 0, 'iso');
   }
   const n = types.length;
@@ -1016,13 +1034,17 @@ function planCriticals(diff, number) {
   const first = Math.max(diff.warningLead, n === 1 ? c.windowStart : c.multiWindowStart);
   const start = Math.min(first, latest);
   const slice = (latest - start) / n;
+  // On crowded nights the slices get short; shrink the gap rather than pile
+  // arrivals up at the end of the window.
+  const gap = Math.min(c.minSeparation, slice * 0.7);
   const list = [];
   let prev = -Infinity;
   for (let i = 0; i < n; i++) {
     let arrive = start + slice * (i + rand(0.15, 0.85));
-    arrive = Math.min(latest, Math.max(arrive, prev + c.minSeparation));
+    arrive = Math.min(latest, Math.max(arrive, prev + gap));
     prev = arrive;
-    list.push({ type: types[i], arrive, warnAt: arrive - diff.warningLead, path: null, spawned: false });
+    const lead = diff.warningLead * (types[i] === 'iso' ? CONFIG.iso.warningFactor : 1);
+    list.push({ type: types[i], arrive, lead, warnAt: arrive - lead, path: null, spawned: false });
   }
   return list;
 }
@@ -1057,8 +1079,8 @@ function updateCriticals() {
   for (const crit of night.criticals) {
     if (!crit.path && night.t >= crit.warnAt) {
       planCriticalPath(crit);
-      Sound.warn(night.diff.warningLead, crit.type);
-      addBanner(`${CRITICAL_NAME[crit.type]} INBOUND`, night.diff.warningLead + 1.2);
+      Sound.warn(crit.lead, crit.type);
+      addBanner(`${CRITICAL_NAME[crit.type]} INBOUND`, crit.lead + 1.2);
     }
     if (!crit.spawned && night.t >= crit.arrive) {
       if (!crit.path) planCriticalPath(crit);
@@ -1723,7 +1745,7 @@ function showSummary() {
   const isoTotal = night.criticals.filter(c => c.type === 'iso').length;
   const critical = tally(s.neoCaught, total);
   const isoRow = isoTotal
-    ? `<tr><td>Interstellar object</td><td class="n">${tally(s.isoCaught, isoTotal)}</td><td class="pts">${s.linked.iso * CONFIG.iso.points}</td></tr>`
+    ? `<tr><td>Interstellar object${isoTotal === 1 ? '' : 's'}</td><td class="n">${tally(s.isoCaught, isoTotal)}</td><td class="pts">${s.linked.iso * CONFIG.iso.points}</td></tr>`
     : '';
   const next = screenButton('CONTINUE', () => startNight(night.number + 1));
   summaryPanel.innerHTML = `
