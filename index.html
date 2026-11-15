@@ -85,6 +85,14 @@
   .missed { opacity: 0.6; }
   .summary tr.bad { color: #ED4C4C; }
   .summary table.spaced { margin-top: 22px; }
+  .summary .gameover {
+    font-size: clamp(26px, 8vw, 36px);
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    color: #ED4C4C;                 /* Pantone 2348 C (Rubin visual identity) */
+    text-shadow: 0 0 16px rgba(237, 76, 76, 0.45);
+    margin-bottom: 6px;
+  }
   .health { letter-spacing: 0.15em; }
   .health .lost { opacity: 0.4; }
   .restored { font-size: 12px; color: #00BABC; margin-left: 6px; }   /* Pantone 2348 C (Rubin visual identity) */
@@ -228,7 +236,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.15';
+const VERSION = 'v0.16';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -803,6 +811,7 @@ function startRun() {
     health: CONFIG.startHealth,
     score: 0,              // points from finished nights (the HUD adds the current night)
     nightsCompleted: 0,
+    linked: { mainBelt: 0, comet: 0 },
     neoCaught: 0,
     neoMissed: 0,
     isoCaught: 0,
@@ -834,6 +843,8 @@ function startNight(number) {
 // Fold this night's numbers into the run.
 function addNightToRun() {
   run.score += stats.score;
+  run.linked.mainBelt += stats.linked.mainBelt;
+  run.linked.comet += stats.linked.comet;
   run.neoCaught += stats.neoCaught;
   run.neoMissed += stats.neoMissed;
   run.isoCaught += stats.isoCaught;
@@ -1784,19 +1795,21 @@ function showSummary() {
 
 // Health ran out.
 function showGameOver() {
-  const survived = run.nightsCompleted;
+  const nights = run.nightsCompleted;
   const again = screenButton('PLAY AGAIN', startRun);
+  const isoRows = run.isoCaught + run.isoMissed ? `
+      <tr><td>Interstellar objects caught</td><td class="n">${run.isoCaught}</td><td class="pts">${run.isoCaught * CONFIG.iso.points}</td></tr>
+      <tr class="bad"><td>Interstellar objects missed</td><td class="n">${run.isoMissed}</td></tr>` : '';
   summaryPanel.innerHTML = `
-    <div class="label">GAME OVER</div>
-    <div class="score">${survived}</div>
-    <div class="label">NIGHT${survived === 1 ? '' : 'S'} CATALOGED</div>
+    <div class="gameover">GAME OVER</div>
+    <div class="score">${run.score}</div>
+    <div class="label">TOTAL SCORE</div>
     <table class="spaced">
-      <tr><td>Points</td><td class="n">${run.score}</td></tr>
-      <tr><td>Near-Earth objects caught</td><td class="n">${run.neoCaught}</td></tr>
-      <tr class="bad"><td>Near-Earth objects missed</td><td class="n">${run.neoMissed}</td></tr>
-      ${run.isoCaught + run.isoMissed ? `
-      <tr><td>Interstellar objects caught</td><td class="n">${run.isoCaught}</td></tr>
-      <tr class="bad"><td>Interstellar objects missed</td><td class="n">${run.isoMissed}</td></tr>` : ''}
+      <tr><td>Nights cataloged</td><td class="n">${nights}</td></tr>
+      <tr class="gap"><td>Asteroids linked</td><td class="n">${run.linked.mainBelt}</td><td class="pts">${run.linked.mainBelt * CONFIG.mainBelt.points}</td></tr>
+      <tr><td>Comets linked</td><td class="n">${run.linked.comet}</td><td class="pts">${run.linked.comet * CONFIG.comet.points}</td></tr>
+      <tr><td>Near-Earth objects caught</td><td class="n">${run.neoCaught}</td><td class="pts">${run.neoCaught * CONFIG.neo.points}</td></tr>
+      <tr class="bad"><td>Near-Earth objects missed</td><td class="n">${run.neoMissed}</td></tr>${isoRows}
     </table>
     ${again.html}`;
   summaryEl.classList.remove('hidden');
