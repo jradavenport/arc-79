@@ -236,7 +236,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.16';
+const VERSION = 'v0.17';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -267,7 +267,7 @@ const CONFIG = {
   startHealth: 3,             // health at the start of a run
   maxHealth: 3,               // health can't be restored above this
   neoMissDamage: 1,           // health lost per missed near-Earth object
-  cleanNightRestore: 1,       // health restored after a night with no misses
+  cleanNightRestore: 0,       // health restored after a night with no misses (0 = none: lost health stays lost)
 
   // Difficulty per night. Night 1 uses the first row, night 2 the second, and
   // so on. Nights past the end of the table repeat the last row, plus
@@ -284,11 +284,11 @@ const CONFIG = {
   nights: [
     { neos: 3, isos: 0, spawn: 1.00, neoSpeed: 1.00, warningLead: 1.05, quietStart: 10, pairs: 0 },
     { neos: 5, isos: 0, spawn: 1.15, neoSpeed: 1.12, warningLead: 0.85, quietStart: 3,  pairs: 0.25 },
-    { neos: 6, isos: 1, spawn: 1.25, neoSpeed: 1.22, warningLead: 0.70, quietStart: 3,  pairs: 0.35 },
+    { neos: 6, isos: 1.5, spawn: 1.25, neoSpeed: 1.22, warningLead: 0.70, quietStart: 3,  pairs: 0.35 },
   ],
-  afterTable: { neos: 1, isos: 0.4, spawn: 0.05, neoSpeed: 0.07, warningLead: -0.05, pairs: 0.1 },
+  afterTable: { neos: 1, isos: 0.5, spawn: 0.05, neoSpeed: 0.07, warningLead: -0.05, pairs: 0.1 },
   maxNeosPerNight: 9,         // caps, however far a run goes
-  maxIsosPerNight: 3,
+  maxIsosPerNight: 4,
   maxPairs: 0.6,
   minWarningLead: 0.5,        // floor on the warning, however far a run goes
 
@@ -348,9 +348,9 @@ const CONFIG = {
   },
   iso: {                      // interstellar object: a rarer, faster critical target
                               // (how many per night is the `isos` column of the nights table)
-    speedMin: 0.30,           // faster than a near-Earth object (also scaled by the night's neoSpeed)
-    speedMax: 0.36,
-    arcDistance: 0.20,        // ≈0.55–0.65 s to turn blue
+    speedMin: 0.34,           // faster than a near-Earth object (also scaled by the night's neoSpeed)
+    speedMax: 0.40,
+    arcDistance: 0.20,        // ≈0.4–0.5 s to turn blue on night 3
     minCrossTime: 2.5,        // its path is always on screen at least this long
     warningFactor: 1.0,       // its warning as a fraction of the night's warningLead (1.0 = same as near-Earth objects)
     points: 180,              // 2× a near-Earth object
