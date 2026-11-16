@@ -115,6 +115,7 @@
   .summary tr.warn { color: #FFDB78; }    /* got away, no harm done (Pantone 2004 C) */
   .summary tr.head td { font-size: 12px; letter-spacing: 0.2em; padding-bottom: 8px; color: #e8ecf5; }
   .summary table.spaced { margin-top: 22px; }
+  .summary .testrun { margin-top: 8px; opacity: 0.35; font-size: 11px; }
   .summary .gameover {
     font-size: clamp(26px, 8vw, 36px);
     font-weight: 700;
@@ -274,7 +275,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.37';
+const VERSION = 'v0.40';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -325,7 +326,10 @@ const CONFIG = {
     { neos: 5, isos: 0, spawn: 1.15, neoSpeed: 1.12, warningLead: 0.85, quietStart: 3,  pairs: 0.25 },
     { neos: 6, isos: 1.5, spawn: 1.25, neoSpeed: 1.22, warningLead: 0.70, quietStart: 3,  pairs: 0.35 },
   ],
-  afterTable: { neos: 1, isos: 0.5, spawn: 0.05, neoSpeed: 0.07, warningLead: -0.05, pairs: 0.1 },
+  afterTable: { neos: 1, isos: 0.5, spawn: 0.05, neoSpeed: 0.04, warningLead: -0.05, pairs: 0.1 },
+  // The last night each setting keeps growing; after it, it holds steady.
+  // (Speed 1.70× is reached at night 15: what night 10 used to be.)
+  growUntil: { spawn: 10, neoSpeed: 15 },
   maxNeosPerNight: 9,         // caps, however far a run goes
   maxIsosPerNight: 4,
   maxPairs: 0.6,
@@ -923,8 +927,10 @@ function nightDifficulty(n) {
     d.neos += g.neos * extra;
     d.isos += g.isos * extra;
     d.pairs += g.pairs * extra;
-    d.spawn += g.spawn * extra;
-    d.neoSpeed += g.neoSpeed * extra;
+    // Spawn rate and speed stop growing after their growUntil night.
+    const upTo = k => Math.max(0, Math.min(n, CONFIG.growUntil[k] ?? Infinity) - table.length);
+    d.spawn += g.spawn * upTo('spawn');
+    d.neoSpeed += g.neoSpeed * upTo('neoSpeed');
     d.warningLead += g.warningLead * extra;
   }
   d.neos = Math.min(Math.round(d.neos), CONFIG.maxNeosPerNight);
@@ -973,8 +979,14 @@ function newStats() {
 }
 
 // A run is nights back to back until health runs out.
+// Testing: add ?night=N to the page address and every run starts at night N
+// (full power, that night's difficulty). Without it, runs start at night 1.
+const START_NIGHT = Math.max(1, Math.floor(Number(new URLSearchParams(location.search).get('night'))) || 1);
+if (START_NIGHT > 1) document.getElementById('version').textContent += ` · starts at night ${START_NIGHT}`;
+
 function startRun() {
   run = {
+    startNight: START_NIGHT,
     health: CONFIG.startHealth,
     score: 0,              // points from finished nights (the HUD adds the current night)
     nightsCompleted: 0,
@@ -985,7 +997,7 @@ function startRun() {
     isoCaught: 0,
     isoMissed: 0,
   };
-  startNight(1);
+  startNight(START_NIGHT);
 }
 
 function startNight(number) {
@@ -1427,7 +1439,13 @@ function linkObject(o) {
 
 // An object left the field. Tagged objects free their slot; real objects
 // count as lost tracks; a near-Earth object that wasn't linked is a miss.
+// After power hits zero, objects still drift off but nothing is counted.
 function objectLeft(o) {
+  if (night.gameOverIn !== null) {
+    if (o.state === 'tagged' || o.state === 'ready') freeSlot(o);
+    o.removed = true;
+    return;
+  }
   if (o === tutorObj && hintStage < 3) {     // tutorial object got away: show it again on another
     hintStage = 0;
     tutorObj = null;
@@ -1545,9 +1563,12 @@ function updateNight(dt) {
     spawnMainBelt();
     night.firstSpawned = true;
   }
-  if (Math.random() < spawnRate(night.t) * dt) spawnRandom();
-  updateCriticals();
-  if (night.ufoAt !== null && night.t >= night.ufoAt) { spawnUfo(); night.ufoAt = null; }
+  // Once power is gone nothing new arrives, and nothing more is counted.
+  if (night.gameOverIn === null) {
+    if (Math.random() < spawnRate(night.t) * dt) spawnRandom();
+    updateCriticals();
+    if (night.ufoAt !== null && night.t >= night.ufoAt) { spawnUfo(); night.ufoAt = null; }
+  }
 
   for (const o of objects) updateObject(o, dt);
   objects = objects.filter(o => !o.removed);
@@ -2255,6 +2276,7 @@ function showGameOver() {
     <div class="gameover">GAME OVER</div>
     <div class="score">${run.score}</div>
     <div class="label">TOTAL SCORE</div>
+    ${run.startNight > 1 ? `<div class="label testrun">TEST · NIGHT ${run.startNight} START</div>` : ''}
     <table class="spaced">
       <tr><td>Nights cataloged</td><td class="n">${nights}</td></tr>
       <tr class="gap"><td>Asteroids linked</td><td class="n">${run.linked.mainBelt}</td><td class="pts">${run.linked.mainBelt * CONFIG.mainBelt.points}</td></tr>
