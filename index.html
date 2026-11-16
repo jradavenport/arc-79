@@ -281,7 +281,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.43';
+const VERSION = 'v0.45';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -990,7 +990,16 @@ function newStats() {
 const START_NIGHT = Math.max(1, Math.floor(Number(new URLSearchParams(location.search).get('night'))) || 1);
 if (START_NIGHT > 1) document.getElementById('version').textContent += ` · starts at night ${START_NIGHT}`;
 
+// Game events for the GoatCounter dashboard (see the script at the end of the
+// page). Test runs (?night=N) aren't counted. Does nothing if the counter
+// didn't load (offline, blocked, or a local copy of the page).
+function countEvent(path, title) {
+  if (START_NIGHT > 1) return;
+  try { window.goatcounter?.count?.({ path, title, event: true }); } catch (e) {}
+}
+
 function startRun() {
+  countEvent('run-start', 'Run started');
   run = {
     startNight: START_NIGHT,
     health: CONFIG.startHealth,
@@ -1061,6 +1070,9 @@ function endNight() {
 // Health ran out.
 function gameOver() {
   addNightToRun();
+  // Which night the run ended on, zero-padded so the dashboard sorts them.
+  const n = run.nightsCompleted + 1;
+  countEvent(`game-over-night-${String(n).padStart(2, '0')}`, `Game over on night ${n}`);
   mode = 'gameover';
   objects = [];
   slots.fill(null);
@@ -2379,5 +2391,9 @@ window.addEventListener('resize', resize);
 resize();
 requestAnimationFrame(frame);
 </script>
+<!-- Visitor counting (GoatCounter: no cookies, no personal data). Dashboard:
+     https://jradavenport.goatcounter.com. It ignores local copies of the page. -->
+<script data-goatcounter="https://jradavenport.goatcounter.com/count"
+        async src="https://gc.zgo.at/count.js"></script>
 </body>
 </html>
