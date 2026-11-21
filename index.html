@@ -302,7 +302,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.50';
+const VERSION = 'v0.53';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -521,15 +521,21 @@ const CONFIG = {
     towardCentre: 0.7,        // fragments' cruise direction leans this much toward mid-screen, so fewer are lost at once
     skyTint: 0.25,            // the sky is tinted this far toward dawnSky, so the night looks different
     starShare: 0.25,          // share of field stars shown (the sky holds still on a bonus night)
-    clouds: true,             // Milky Way clouds behind Saturn, held still, with the band passing near the planet
-    saturn: {                 // the backdrop: drawn once per night at low resolution, then scaled up
+    clouds: true,             // Milky Way clouds behind the planet, held still, with the band passing near it
+    // The backdrop planet: a random one each bonus night, at a random spot
+    // and tilt. Drawn once per night at low resolution, then scaled up.
+    // Testing: add ?planet=jupiter (or saturn, neptune) to the page address.
+    planets: {
       show: true,
-      x: 0.66, y: 0.62,       // centre, as fractions of the field's width and height
-      radius: 0.16,           // as a fraction of the field's shorter side
-      tilt: -0.35,            // ring tilt, radians
-      flatten: 0.3,           // ring ellipse height / width
+      order: ['saturn', 'jupiter', 'neptune'],   // each bonus night picks one at random (never the same twice in a row)
+      x: [0.28, 0.72],        // its centre lands somewhere in this range of the field's width...
+      y: [0.3, 0.68],         // ...and height
       pixel: 4,               // size of one lo-fi pixel, in CSS px
-      brightness: 0.26,       // how far the disc is mixed from sky toward white (keep it dim: objects go on top)
+      // radius: fraction of the field's shorter side. tilt: radians, either way (a random amount in the range).
+      // brightness: how far it is mixed from the sky toward its colours (keep it dim: objects go on top).
+      saturn:  { radius: 0.16, tilt: [0.15, 0.55], flatten: 0.3,  brightness: 0.26 },   // flatten: ring height / width
+      jupiter: { radius: 0.21, tilt: [0, 0.15],                   brightness: 0.3 },
+      neptune: { radius: 0.13, tilt: [0.1, 0.5],  flatten: 0.25, brightness: 0.36 },  // the ice giant, with faint rings
     },
   },
 
@@ -1109,7 +1115,8 @@ let lostPipFlash = 0;      // seconds left of the red blink on the diamond(s) ju
 let hintStage = 0;         // first-night tutorial: 0 tag, 1 wait, 2 link, 3 done
 let tutorObj = null;       // the object the tutorial is pointing at
 let nextId = 1;
-let bonusLook = false;     // the bonus night's still sky and Saturn (from its title card to the next night)
+let bonusLook = false;     // the bonus night's still sky and planet
+let bonusSky = null;       // the bonus night's planet: { kind, x, y, tilt } (planned at the breather before it)
 
 // Seconds in the current night (bonus nights are shorter).
 const nightLen = () => night?.bonus ? CONFIG.bonus.length : (night?.diff.length ?? CONFIG.nightLength);
@@ -1182,6 +1189,9 @@ function newStats() {
 const START_NIGHT = Math.max(1, Math.floor(Number(new URLSearchParams(location.search).get('night'))) || 1);
 if (START_NIGHT > 1) document.getElementById('version').textContent += ` · starts at night ${START_NIGHT}`;
 
+// Testing: ?planet=jupiter (saturn, neptune) makes every bonus night that planet.
+const PLANET_TEST = new URLSearchParams(location.search).get('planet');
+
 // Testing: add ?bonus=1 to the page address and every run starts with a
 // bonus night (then the usual first night).
 const BONUS_FIRST = new URLSearchParams(location.search).get('bonus') === '1';
@@ -1219,6 +1229,8 @@ function startNight(number, bonus = false) {
   // A fresh sky every night: new stars and new Milky Way clouds (built
   // during the breather if there was one, so nothing stutters now).
   seedFieldStars();
+  if (!bonus) bonusSky = null;
+  else if (!bonusSky) bonusSky = planBonusSky();
   if (nextMilky && nextMilky.fw === W && nextMilky.fh === H) milkyImg = nextMilky;
   else { pickMilkySeed(bonus); milkyImg = null; }   // built on the first frame
   nextMilky = null;
@@ -2050,13 +2062,13 @@ function bandRadius(th, pd, ph) {
   return pd + M.wander[0] * Math.sin(2 * th + ph) + M.wander[1] * Math.sin(3 * th - 2 * ph);
 }
 // A new random cloud layout. For a bonus night, keep rolling until the band
-// crosses the (still) view at Saturn's height, so it passes behind the planet.
+// crosses the (still) view at the planet's height, so it passes behind it.
 function pickMilkySeed(bonus) {
   milkySeed = Math.random() * 1000;
   if (!bonus || !B.clouds) return;
   const pd = poleDistance(), d = screenDirToSky(0, pd);
   const th = Math.atan2(-d.y, -d.x);                      // direction from the pole to mid-screen
-  const target = pd - (B.saturn.y - 0.5) * H / W;          // distance from the pole to Saturn's height
+  const target = pd - ((bonusSky?.y ?? 0.5) - 0.5) * H / W;   // distance from the pole to the planet's height
   for (let i = 0; i < 300; i++) {
     if (Math.abs(bandRadius(th, pd, milkySeed % TAU) - target) < 0.1) return;
     milkySeed = Math.random() * 1000;
@@ -2072,7 +2084,7 @@ function drawMilkyWay(dawn) {
   const half = milkyImg.width * M.pixel / 2;
   ctx.save();
   ctx.globalAlpha = 1 - M.dawnFade * dawn;
-  ctx.imageSmoothingEnabled = false;           // keep the big pixels crisp, like Saturn's
+  ctx.imageSmoothingEnabled = false;           // keep the big pixels crisp, like the planets'
   ctx.translate(pole.x, pole.y);
   ctx.rotate(-cam.a);
   ctx.drawImage(milkyImg, -half, -half, half * 2, half * 2);
@@ -2396,8 +2408,8 @@ function drawChunk(o, s, r, col) {
   ctx.restore();
 }
 
-// Bonus night's sky: tinted, held still, few stars, and Saturn.
-let saturnImg = null;          // the low-resolution Saturn, built for the current field size
+// Bonus night's sky: tinted, held still, few stars, and a planet.
+let planetImg = null;          // the low-resolution planet, built for this night and field size
 // Dawn brightens it at the end, as on any night.
 function drawBonusSky() {
   const dawn = night?.bonus ? dawnAmount() : 0;
@@ -2414,73 +2426,163 @@ function drawBonusSky() {
     ctx.fillRect(p.x - s.size / 2, p.y - s.size / 2, s.size, s.size);
   }
   ctx.globalAlpha = 1;
-  if (!B.saturn.show) return;
-  ctx.globalAlpha = 1 - 0.4 * dawn;            // Saturn fades a little in the dawn too
-  if (!saturnImg || saturnImg.fw !== W || saturnImg.fh !== H) saturnImg = buildSaturn();
+  const P = B.planets;
+  if (!P.show || !bonusSky) return;
+  ctx.globalAlpha = 1 - 0.4 * dawn;            // the planet fades a little in the dawn too
+  if (!planetImg || planetImg.fw !== W || planetImg.fh !== H || planetImg.plan !== bonusSky) planetImg = buildPlanet(bonusSky);
   ctx.save();
   ctx.imageSmoothingEnabled = false;           // keep the big pixels crisp
-  ctx.drawImage(saturnImg, 0, 0, saturnImg.width * B.saturn.pixel, saturnImg.height * B.saturn.pixel);
+  ctx.drawImage(planetImg, 0, 0, planetImg.width * P.pixel, planetImg.height * P.pixel);
   ctx.restore();
   ctx.globalAlpha = 1;
 }
 
-// Draw Saturn once into a small canvas (one pixel per `pixel` CSS px). Opaque
-// colours mixed from the sky, so the stars behind it are hidden.
-function buildSaturn() {
-  const S = B.saturn, px = S.pixel;
+// Which planet the next bonus night shows, where, and at what tilt.
+function planBonusSky() {
+  const P = B.planets;
+  const choices = P.order.filter(k => k !== run?.lastPlanet);   // not the same planet twice in a row
+  const kind = P[PLANET_TEST] ? PLANET_TEST : choices[Math.floor(Math.random() * choices.length)];
+  if (run) run.lastPlanet = kind;
+  const t = P[kind].tilt;
+  return { kind, x: rand(...P.x), y: rand(...P.y), tilt: rand(...t) * (Math.random() < 0.5 ? -1 : 1) };
+}
+
+// Draw the planet once into a small canvas (one pixel per `pixel` CSS px).
+// Opaque colours mixed from the sky, so the stars behind it are hidden.
+function buildPlanet(plan) {
+  const P = B.planets, px = P.pixel, S = P[plan.kind];
   const img = document.createElement('canvas');
   img.width = Math.ceil(W / px);
   img.height = Math.ceil(H / px);
-  img.fw = W; img.fh = H;
+  img.fw = W; img.fh = H; img.plan = plan;
   const g = img.getContext('2d');
   g.scale(1 / px, 1 / px);                     // draw in field px
-  const sky = mixHex(C.sky, C.dawnSky, B.skyTint);
-  const shade = t => mixHex(sky.startsWith('#') ? sky : rgbToHex(sky), C.white, t);
+  const sky = rgbToHex(mixHex(C.sky, C.dawnSky, B.skyTint));
+  const tint = (col, t) => mixHex(sky, col, S.brightness * t);   // a colour, dimmed toward the sky
   const R = S.radius * Math.min(W, H);
-  const cx = S.x * W, cy = S.y * H;
-  // Ring bands: [inner, outer] in planet radii, and brightness. The gap
-  // between the 2nd and 3rd is the Cassini Division.
-  const bands = [[1.25, 1.45, 0.45], [1.45, 1.82, 0.85], [1.9, 2.2, 0.65]];
-  const ringHalf = (back) => {
-    for (const [r0, r1, t] of bands) {
-      g.fillStyle = shade(S.brightness * t);
-      g.beginPath();
-      const a0 = back ? Math.PI : 0, a1 = back ? TAU : Math.PI;   // far half, or near half
-      g.ellipse(cx, cy, R * r1, R * r1 * S.flatten, S.tilt, a0, a1);
-      g.ellipse(cx, cy, R * r0, R * r0 * S.flatten, S.tilt, a1, a0, true);
-      g.closePath();
-      g.fill();
-    }
-  };
-  ringHalf(true);
-  // The disc, with bands parallel to the rings.
-  g.save();
-  g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.clip();
-  g.fillStyle = shade(S.brightness);
-  g.fillRect(cx - R, cy - R, 2 * R, 2 * R);
-  g.translate(cx, cy);
-  g.rotate(S.tilt);
-  const stripes = [[-0.75, 0.18, 0.75], [-0.35, 0.12, 1.15], [0.05, 0.2, 0.85], [0.42, 0.1, 1.1], [0.7, 0.2, 0.7]];
-  for (const [y, h, t] of stripes) {
-    g.fillStyle = shade(S.brightness * t);
-    g.fillRect(-R * 1.2, y * R, R * 2.4, h * R);
-  }
-  // The rings' shadow across the disc, just below the near half of the rings.
-  g.fillStyle = shade(S.brightness * 0.35);
-  g.fillRect(-R * 1.2, R * 0.2, R * 2.4, R * 0.07);
-  g.restore();
-  // Night side: darken the limb away from the light (upper left).
+  const cx = plan.x * W, cy = plan.y * H;
+  ({ saturn: drawSaturn, jupiter: drawJupiter, neptune: drawNeptune })[plan.kind](g, cx, cy, R, plan.tilt, S, tint, sky);
+  return img;
+}
+
+// Night side: darken the limb away from the light (upper left).
+function limbShade(g, cx, cy, R, sky) {
   g.save();
   g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.clip();
   const grad = g.createRadialGradient(cx - R * 0.35, cy - R * 0.35, R * 0.2, cx, cy, R * 1.05);
   grad.addColorStop(0, 'rgba(0,0,0,0)');
-  grad.addColorStop(1, rgbaOf(sky, 0.7));
+  grad.addColorStop(1, rgbaOf(mixHex(sky, sky, 0), 0.7));
   g.fillStyle = grad;
   g.fillRect(cx - R, cy - R, 2 * R, 2 * R);
   g.restore();
-  ringHalf(false);
-  return img;
 }
+
+// Rings as elliptical bands [inner, outer] in planet radii, with brightness;
+// the far half goes behind the disc, the near half in front.
+function ringHalf(g, cx, cy, R, tilt, flatten, bands, back) {
+  for (const [r0, r1, col] of bands) {
+    g.fillStyle = col;
+    g.beginPath();
+    const a0 = back ? Math.PI : 0, a1 = back ? TAU : Math.PI;   // far half, or near half
+    g.ellipse(cx, cy, R * r1, R * r1 * flatten, tilt, a0, a1);
+    g.ellipse(cx, cy, R * r0, R * r0 * flatten, tilt, a1, a0, true);
+    g.closePath();
+    g.fill();
+  }
+}
+
+// Stripes across a disc, parallel to its tilt: [y, height, colour] in planet radii.
+function stripes(g, cx, cy, R, tilt, list, wobble = 0) {
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.clip();
+  g.translate(cx, cy);
+  g.rotate(tilt);
+  for (const [y, h, col] of list) {
+    g.fillStyle = col;
+    if (!wobble) { g.fillRect(-R * 1.2, y * R, R * 2.4, h * R); continue; }
+    // A wavy band edge, for turbulent belts.
+    g.beginPath();
+    const n = 14;
+    for (let i = 0; i <= n; i++) {
+      const x = -R * 1.2 + (2.4 * R * i) / n;
+      g.lineTo(x, (y + wobble * Math.sin(i * 1.7 + y * 9)) * R);
+    }
+    for (let i = n; i >= 0; i--) {
+      const x = -R * 1.2 + (2.4 * R * i) / n;
+      g.lineTo(x, (y + h + wobble * Math.sin(i * 1.3 + y * 7)) * R);
+    }
+    g.closePath();
+    g.fill();
+  }
+  g.restore();
+}
+
+// Saturn: banded disc, a ring shadow, and the rings with the Cassini Division.
+function drawSaturn(g, cx, cy, R, tilt, S, tint, sky) {
+  const W8 = C.white;
+  const bands = [[1.25, 1.45, 0.45], [1.45, 1.82, 0.85], [1.9, 2.2, 0.65]].map(([a, b, t]) => [a, b, tint(W8, t)]);
+  ringHalf(g, cx, cy, R, tilt, S.flatten, bands, true);
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.clip();
+  g.fillStyle = tint(W8, 1);
+  g.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+  g.restore();
+  stripes(g, cx, cy, R, tilt, [[-0.75, 0.18, 0.75], [-0.35, 0.12, 1.15], [0.05, 0.2, 0.85], [0.42, 0.1, 1.1], [0.7, 0.2, 0.7],
+    [0.2, 0.07, 0.35]].map(([y, h, t]) => [y, h, tint(W8, t)]));   // the last is the rings' shadow
+  limbShade(g, cx, cy, R, sky);
+  ringHalf(g, cx, cy, R, tilt, S.flatten, bands, false);
+}
+
+// Jupiter: cream zones and rusty belts with wavy edges, and the Great Red Spot.
+function drawJupiter(g, cx, cy, R, tilt, S, tint, sky) {
+  const cream = '#f1e3c4', tan = '#c99a6b', rust = '#b2674a';
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.clip();
+  g.fillStyle = tint(cream, 1);
+  g.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+  g.restore();
+  stripes(g, cx, cy, R, tilt, [
+    [-0.95, 0.25, tint(tan, 0.8)], [-0.62, 0.12, tint(tan, 1)], [-0.38, 0.16, tint(rust, 1)],
+    [0.1, 0.18, tint(rust, 1.05)], [0.42, 0.1, tint(tan, 1)], [0.68, 0.32, tint(tan, 0.8)],
+  ], 0.025);
+  // The Great Red Spot, in the southern belt (below the equator, toward the right).
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.clip();
+  g.translate(cx, cy);
+  g.rotate(tilt);
+  g.fillStyle = tint(cream, 1.1);
+  g.beginPath(); g.ellipse(R * 0.3, R * 0.36, R * 0.24, R * 0.13, 0, 0, TAU); g.fill();
+  g.fillStyle = tint('#c8704f', 1.3);   // a muted brick red, a touch warmer than the belts
+  g.beginPath(); g.ellipse(R * 0.3, R * 0.36, R * 0.18, R * 0.09, 0, 0, TAU); g.fill();
+  g.restore();
+  limbShade(g, cx, cy, R, sky);
+}
+
+// Neptune, the ice giant: deep blue with lighter bands, a dark spot, a
+// bright cloud streak, and faint thin rings.
+function drawNeptune(g, cx, cy, R, tilt, S, tint, sky) {
+  const blue = '#3f63d6', light = '#7d9cf2', dark = '#1f2f7a', cloud = '#dfe8ff', ring = '#8ea2d8';
+  const bands = [[1.55, 1.62, tint(ring, 0.55)], [1.95, 2.05, tint(ring, 0.8)]];
+  ringHalf(g, cx, cy, R, tilt, S.flatten, bands, true);
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.clip();
+  g.fillStyle = tint(blue, 1);
+  g.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+  g.restore();
+  stripes(g, cx, cy, R, tilt, [[-0.7, 0.22, tint(light, 0.9)], [-0.2, 0.1, tint(light, 0.75)], [0.45, 0.3, tint(dark, 1.4)]]);
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.clip();
+  g.translate(cx, cy);
+  g.rotate(tilt);
+  g.fillStyle = tint(dark, 1.8);                  // the Great Dark Spot
+  g.beginPath(); g.ellipse(-R * 0.25, R * 0.12, R * 0.2, R * 0.11, 0, 0, TAU); g.fill();
+  g.fillStyle = tint(cloud, 1.1);                 // a bright high cloud beside it
+  g.fillRect(-R * 0.05, -R * 0.02, R * 0.32, R * 0.06);
+  g.restore();
+  limbShade(g, cx, cy, R, sky);
+  ringHalf(g, cx, cy, R, tilt, S.flatten, bands, false);
+}
+
 // mixHex returns 'rgb(r,g,b)'; these turn that back into hex or rgba().
 function rgbToHex(rgb) {
   const [r, g, b] = rgb.match(/\d+/g).map(Number);
@@ -2957,6 +3059,7 @@ function showBreather(label, next, nextBonus = false) {
   // this message has had a chance to show).
   setTimeout(() => {
     if (!afterBreather || !CONFIG.milkyWay.show) return;
+    if (nextBonus) bonusSky = planBonusSky();   // its planet and spot first: the clouds aim at it
     pickMilkySeed(nextBonus);
     nextMilky = buildMilkyWay();
   }, 50);
