@@ -302,7 +302,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.49';
+const VERSION = 'v0.50';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -351,15 +351,20 @@ const CONFIG = {
   //   pairs:       chance that a critical target arrives together with the next one
   //                (two at once needs two free slots)
   //   length:      seconds in the night (short early nights get a new player to night 2 quickly)
+  //   rampLow:     spawn multiplier right after the quiet start (later nights start busier; default `rampLow` above)
+  //   neoStart:    earliest second a critical target can arrive when there are several (default `neo.multiWindowStart`)
   nights: [
     { neos: 3, isos: 0, spawn: 1.00, neoSpeed: 1.00, warningLead: 1.05, quietStart: 10, pairs: 0,    length: 40 },
     { neos: 5, isos: 0, spawn: 1.15, neoSpeed: 1.12, warningLead: 0.85, quietStart: 3,  pairs: 0.25, length: 50 },
     { neos: 6, isos: 1.5, spawn: 1.25, neoSpeed: 1.22, warningLead: 0.70, quietStart: 3,  pairs: 0.35, length: 60 },
+    // From night 4 the warm-up is over: no quiet start, a busy field from the first second, and
+    // critical targets from 6 s. Then it climbs faster toward the same top difficulty as before.
+    { neos: 7, isos: 2, spawn: 1.35, neoSpeed: 1.30, warningLead: 0.65, quietStart: 0,  pairs: 0.45, length: 60, rampLow: 1.1, neoStart: 6 },
   ],
-  afterTable: { neos: 1, isos: 0.5, spawn: 0.05, neoSpeed: 0.04, warningLead: -0.05, pairs: 0.1 },
+  afterTable: { neos: 1, isos: 0.5, spawn: 0.06, neoSpeed: 0.06, warningLead: -0.05, pairs: 0.1 },
   // The last night each setting keeps growing; after it, it holds steady.
-  // (Speed 1.70× is reached at night 15: what night 10 used to be.)
-  growUntil: { spawn: 10, neoSpeed: 15 },
+  // (Top spawn ≈1.6× by night 8 and top speed ≈1.7× by night 11; they used to take until nights 10 and 15.)
+  growUntil: { spawn: 8, neoSpeed: 11 },
   maxNeosPerNight: 9,         // caps, however far a run goes
   maxIsosPerNight: 4,
   maxPairs: 0.6,
@@ -464,7 +469,7 @@ const CONFIG = {
     size: 0.005, sizeMinPx: 2.5, sizeMaxPx: 4.5,
   },
 
-  // ---- Bonus Night -------------------------------------------------------
+  // ---- Bonus Night (playtest) --------------------------------------------
   // A reward round after every few nights: no near-Earth or interstellar
   // objects, no UFO, and Power is not at risk. A big comet breaks up into
   // chunks; each chunk breaks up into pebbles. Big comets and chunks use the
@@ -1350,7 +1355,8 @@ function spawnRate(t) {
   const quiet = night ? night.diff.quietStart : 10;
   if (t < quiet) return c.baseSpawnRate * c.quietSpawnFactor * nightScale;
   const p = clamp((t - quiet) / (nightLen() - quiet), 0, 1);
-  return c.baseSpawnRate * nightScale * (c.rampLow + (c.rampHigh - c.rampLow) * Math.pow(p, c.rampExponent));
+  const low = night?.diff.rampLow ?? c.rampLow;
+  return c.baseSpawnRate * nightScale * (low + (c.rampHigh - low) * Math.pow(p, c.rampExponent));
 }
 
 // Time for a point at (x, y) moving at (vx, vy) to pass the screen edge plus
@@ -1689,7 +1695,7 @@ function planCriticals(diff, number) {
   const worstCross = (Math.hypot(1, H / W) + 2 * CONFIG.edgeMargin) / (c.speedMin * diff.neoSpeed - 2 * fieldSpeed());
   const len = diff.length, k = len / 60;        // the windows are set for a 60 s night
   const latest = Math.min(c.windowEnd * k, len - worstCross - c.endBuffer);
-  const first = Math.max(diff.warningLead, types.length === 1 ? c.windowStart * k : c.multiWindowStart);
+  const first = Math.max(diff.warningLead, types.length === 1 ? c.windowStart * k : (diff.neoStart ?? c.multiWindowStart));
   const start = Math.min(first, latest);
   const slice = (latest - start) / n;
   // On crowded nights the slices get short; shrink the gap rather than pile
@@ -2764,10 +2770,12 @@ function drawTutorial() {
     ctx.arc(s.x, s.y, r + 16 + pulse * 8, 0, TAU);
     ctx.stroke();
   }
-  // Label with a little arrow pointing down at it. Kept on screen.
+  // Label with a little arrow pointing at it: above it, or below it when it
+  // is too close to the top for the label (under the HUD) to fit above.
   const fs = clamp(W * 0.055, 20, 28);
   const lx = clamp(s.x, 70, W - 70);
-  const ly = Math.max(s.y - r - 44, safe.top + 110);
+  const above = s.y - r - 44 >= safe.top + 110;
+  const ly = above ? s.y - r - 44 : s.y + r + 44 + fs;   // the label's bottom edge
   ctx.globalAlpha = 1;
   ctx.font = font(fs, 700);
   ctx.textAlign = 'center';
@@ -2775,9 +2783,15 @@ function drawTutorial() {
   ctx.fillText(label, lx, ly);
   ctx.lineWidth = 2.5;
   ctx.beginPath();
-  const ay = ly + 6, by = Math.min(s.y - r - 12, ay + 26);
-  ctx.moveTo(s.x, ay); ctx.lineTo(s.x, by);
-  ctx.moveTo(s.x - 6, by - 7); ctx.lineTo(s.x, by); ctx.lineTo(s.x + 6, by - 7);
+  if (above) {                                 // from the label down to the object
+    const ay = ly + 6, by = s.y - r - 12;
+    ctx.moveTo(s.x, ay); ctx.lineTo(s.x, by);
+    ctx.moveTo(s.x - 6, by - 7); ctx.lineTo(s.x, by); ctx.lineTo(s.x + 6, by - 7);
+  } else {                                     // from the label up to the object
+    const ay = ly - fs - 6, by = s.y + r + 12;
+    ctx.moveTo(s.x, ay); ctx.lineTo(s.x, by);
+    ctx.moveTo(s.x - 6, by + 7); ctx.lineTo(s.x, by); ctx.lineTo(s.x + 6, by + 7);
+  }
   ctx.stroke();
   ctx.restore();
 }
