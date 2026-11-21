@@ -19,11 +19,11 @@
 <link rel="canonical" href="https://arc79.space/">
 <meta property="og:title" content="ARC-79: Catalog the Solar System">
 <meta property="og:description" content="Be a survey telescope: tag moving asteroids and comets, wait while they move, and link them to catalog the Solar System.">
-<meta property="og:image" content="https://arc79.space/social-card.png">
+<meta property="og:image" content="https://arc79.space/social-card.png?v=0.49">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://arc79.space/social-card.png">
+<meta name="twitter:image" content="https://arc79.space/social-card.png?v=0.49">
 <style>
   html, body {
     margin: 0;
@@ -302,7 +302,7 @@
 
 // Shown small on the start screen, so you can tell which build a phone has loaded.
 // Bump it with each change.
-const VERSION = 'v0.48';
+const VERSION = 'v0.49';
 document.getElementById('version').textContent = VERSION;
 
 /* ==========================================================================
@@ -315,7 +315,9 @@ document.getElementById('version').textContent = VERSION;
    ========================================================================== */
 const CONFIG = {
   // ---- The night ---------------------------------------------------------
-  nightLength: 60,            // seconds in one night (was 79, the name's origin; 60 plays better)
+  nightLength: 60,            // seconds in a night that doesn't set its own `length` in the nights table below
+  breather: 3,                // seconds the "NIGHT n COMPLETE" message stays up before the next night starts by itself...
+  breatherSkipAfter: 0.8,     // ...or a tap starts it sooner, once the message has been up this long (so a frantic last tap doesn't skip it)
   // (the calm opening's length is per night: `quietStart` in the nights table below)
   quietSpawnFactor: 0.2,      // spawn rate during the quiet start, as a fraction of baseline (0.2 × 0.9 ≈ 1 object every 5–6 s)
   firstObjectAt: 1.5,         // a guaranteed main-belt asteroid enters at this time, so there's something to learn on
@@ -348,10 +350,11 @@ const CONFIG = {
   //   quietStart:  seconds of calm at the start (night 1 needs it to learn; later nights barely pause)
   //   pairs:       chance that a critical target arrives together with the next one
   //                (two at once needs two free slots)
+  //   length:      seconds in the night (short early nights get a new player to night 2 quickly)
   nights: [
-    { neos: 3, isos: 0, spawn: 1.00, neoSpeed: 1.00, warningLead: 1.05, quietStart: 10, pairs: 0 },
-    { neos: 5, isos: 0, spawn: 1.15, neoSpeed: 1.12, warningLead: 0.85, quietStart: 3,  pairs: 0.25 },
-    { neos: 6, isos: 1.5, spawn: 1.25, neoSpeed: 1.22, warningLead: 0.70, quietStart: 3,  pairs: 0.35 },
+    { neos: 3, isos: 0, spawn: 1.00, neoSpeed: 1.00, warningLead: 1.05, quietStart: 10, pairs: 0,    length: 40 },
+    { neos: 5, isos: 0, spawn: 1.15, neoSpeed: 1.12, warningLead: 0.85, quietStart: 3,  pairs: 0.25, length: 50 },
+    { neos: 6, isos: 1.5, spawn: 1.25, neoSpeed: 1.22, warningLead: 0.70, quietStart: 3,  pairs: 0.35, length: 60 },
   ],
   afterTable: { neos: 1, isos: 0.5, spawn: 0.05, neoSpeed: 0.04, warningLead: -0.05, pairs: 0.1 },
   // The last night each setting keeps growing; after it, it holds steady.
@@ -412,7 +415,8 @@ const CONFIG = {
     points: 50,
                               // (how many per night, and their warning, are in `nights` above)
     windowStart: 34,          // a night's only near-Earth object arrives between windowStart...
-    windowEnd: 53,            // ...and windowEnd (pulled earlier if needed so it can finish crossing before the night ends)
+    windowEnd: 53,            // ...and windowEnd (pulled earlier if needed so it can finish crossing before the night ends).
+                              //   Both are for a 60 s night and shrink in proportion on shorter ones.
     multiWindowStart: 14,     // with two or more, the window opens this early instead, so one comes early
     minSeparation: 4,         // seconds at least between two arrivals
     endBuffer: 1.5,           // it must be able to finish crossing this many seconds before the night ends
@@ -460,10 +464,94 @@ const CONFIG = {
     size: 0.005, sizeMinPx: 2.5, sizeMaxPx: 4.5,
   },
 
+  // ---- Bonus Night -------------------------------------------------------
+  // A reward round after every few nights: no near-Earth or interstellar
+  // objects, no UFO, and Power is not at risk. A big comet breaks up into
+  // chunks; each chunk breaks up into pebbles. Big comets and chunks use the
+  // usual tag → blue → link rules (and the buffer); linking one breaks it up,
+  // and if you leave it alone it breaks up by itself after `breakAfter`
+  // seconds. Pebbles are caught with a single tap and don't use the buffer.
+  // Testing: add ?bonus=1 to the page address to start the run with one.
+  bonus: {
+    length: 45,               // seconds in a bonus night
+    every: 5,                 // a bonus night after every this-many nights (after nights 5, 10, 15...; 0 = never)
+    cometsAt: [1.5, 14, 27],  // the latest time each big comet comes on screen (up to 3)...
+    nextWhenClear: 2,         // ...but the next one comes sooner, this many seconds after the field is clear of pieces,
+    lastCometBy: 29,          //   as long as that is before this time (so there's time to finish it)
+    trickle: 0.5,             // ordinary objects in between, as a fraction of baseSpawnRate (0.5 ≈ 27 a night, about half a
+                              //   normal night's rate; they compete for the buffer, so the pieces are harder to clear; 0 = none)
+    mix: { mainBelt: 0.8, comet: 0.2 },   // what the trickle is made of: asteroids and normal comets (no variable stars)
+    bigComet: {
+      speed: [0.035, 0.045],  // its slow drift once it has arrived
+      arriveIn: 6,            // it sweeps in and slows, reaching mid-screen about this many seconds after it appears
+      entryDrag: 0.6,         // how quickly the sweep-in slows (per second)
+      arcDistance: 0.11,      // ≈2.5–3 s to turn blue once it is drifting
+      breakAfter: 10,         // fallback: breaks up by itself this many seconds after it appears
+      chunks: 4,              // pieces it breaks into
+      points: 50,
+      size: 0.02, sizeMinPx: 9, sizeMaxPx: 20,   // nucleus radius
+      tailLength: 22,         // dust tail length, in nucleus radii
+      tailDots: 70,           // dots streaming down the dust tail
+      tailFlow: [0.05, 0.11], // how fast the dots stream (tail lengths per second): the "light animation"
+    },
+    chunk: {
+      speed: [0.03, 0.05],    // cruise speed once the burst has slowed
+      burst: [0.12, 0.2],     // starting speed outward from the breakup
+      drag: 2.2,              // how fast the burst slows to the cruise speed (per second)
+      arcDistance: 0.07,      // ≈1.5–2 s to turn blue
+      breakAfter: 7,          // fallback: breaks up by itself this long after it appears
+      pebbles: 3,             // pieces each chunk breaks into
+      points: 20,
+      spin: [2.2, 3.6],       // radians per second, either way: chunks spin fast...
+      tumble: [2, 4],         // ...and tumble end over end (outline squashes and stretches this many radians per second)
+      size: 0.014, sizeMinPx: 8, sizeMaxPx: 15,
+    },
+    pebble: {
+      speed: [0.04, 0.07],
+      burst: [0.1, 0.18],
+      drag: 2.5,
+      points: 10,             // caught with one tap, no buffer slot
+      size: 0.006, sizeMinPx: 4, sizeMaxPx: 7,   // smaller than an asteroid
+    },
+    towardCentre: 0.7,        // fragments' cruise direction leans this much toward mid-screen, so fewer are lost at once
+    skyTint: 0.25,            // the sky is tinted this far toward dawnSky, so the night looks different
+    starShare: 0.25,          // share of field stars shown (the sky holds still on a bonus night)
+    clouds: true,             // Milky Way clouds behind Saturn, held still, with the band passing near the planet
+    saturn: {                 // the backdrop: drawn once per night at low resolution, then scaled up
+      show: true,
+      x: 0.66, y: 0.62,       // centre, as fractions of the field's width and height
+      radius: 0.16,           // as a fraction of the field's shorter side
+      tilt: -0.35,            // ring tilt, radians
+      flatten: 0.3,           // ring ellipse height / width
+      pixel: 4,               // size of one lo-fi pixel, in CSS px
+      brightness: 0.26,       // how far the disc is mixed from sky toward white (keep it dim: objects go on top)
+    },
+  },
+
   // ---- Look --------------------------------------------------------------
   linkFadeTime: 0.7,          // seconds a linked object takes to fade out
   showArcTrail: true,         // dotted line from the tag point to a tagged object, plus a progress ring
   showHints: true,            // short how-to lines above the buffer until the first link
+  // Normal nights: faint, blocky clouds of the Milky Way, fixed to the sky so
+  // they turn with the stars. A band winds around the pole the field turns
+  // about, so it drifts in and out of view over a run; patchy haze elsewhere.
+  milkyWay: {
+    show: true,
+    pixel: 5,                 // size of its big pixels, in CSS px (Saturn's are 4)
+    brightness: 0.14,         // opacity of its brightest parts (keep it faint: it's backdrop)
+    levels: 5,                // brightness steps (fewer = more posterised)
+    band: 0.3,                // half-width of the band, in screen widths
+    wander: [0.55, 0.3],      // how far the band swings toward and away from the pole as the sky turns (widths)
+    clump: 0.3,               // size of the cloud clumps, in screen widths
+    rift: 0.55,               // how dark the dust lane along the band's middle is (0 = none)
+    haze: 0.22,               // strength of the patchy clouds away from the band
+    tint: 0.35,               // how blue its faint edges are (0 = white)...
+    warmth: 0.3,              // ...and how warm (yellow) its brightest knots are
+    purple: 0.75,             // a touch of purple in some regions of cloud...
+    green: 0.45,              // ...and of soft green in others, like airglow (each in big, soft patches)
+    patch: 1.2,               // size of those colour patches, in screen widths
+    dawnFade: 0.85,           // how much it fades by dawn
+  },
   dawn: {
     enabled: true,            // the sky brightens toward the end of the night
     duration: 12,             // over the last this-many seconds
@@ -497,7 +585,7 @@ const CONFIG = {
     ready: { octave: 1, length: 0.9,  volume: 0.18 },   // soft bell, an octave above its tag note
     link:  {
       octave: 0,              // the run starts on the object's own note, in this octave (0 = same as its tag)
-      notes: { mainBelt: 2, comet: 3, ufo: 4 },         // length of the rising run, by type
+      notes: { mainBelt: 2, comet: 3, ufo: 4, bigComet: 4, chunk: 3, pebble: 2 },   // length of the rising run, by type
       gap: 0.065,             // seconds between notes in the run
       length: 0.35,           // how long each note rings
       volume: 0.24,
@@ -521,6 +609,7 @@ const CONFIG = {
     warnIso: { tones: [1319, 988, 740], beep: 0.11, volume: 0.16 }, // interstellar: falling triplets for the whole warning
     miss:  { freq: 330, toFreq: 110, length: 0.7, volume: 0.30 },  // low downward slide
     minGap: 0.08,             // blue chimes that land together are spaced at least this far apart (seconds)
+    breakup: { notes: 7, gap: 0.045, length: 0.5, volume: 0.16 },  // bonus night: a scatter of falling notes
   },
 
   // ---- Debug -------------------------------------------------------------
@@ -718,6 +807,22 @@ const Sound = (() => {
       });
     },
 
+    // Bonus night breakup: a scatter of falling pentatonic notes, plus a soft
+    // low thump for the big comet. A chunk's breakup is shorter and quieter.
+    breakup(big) {
+      if (!live()) return;
+      const b = S.breakup;
+      const count = big ? b.notes : Math.ceil(b.notes / 2);
+      const top = big ? 14 : 12;
+      const vol = b.volume * (big ? 1 : 0.7);
+      for (let i = 0; i < count; i++) {
+        const f = noteHz(top - i);
+        tone({ freq: f, type: 'triangle', at: i * b.gap, length: b.length, volume: vol });
+        tone({ freq: f * 2, at: i * b.gap, length: b.length * 0.3, volume: vol * 0.2 });
+      }
+      if (big) tone({ freq: noteHz(-5), toFreq: noteHz(-10), length: 0.6, volume: 0.3, attack: 0.01 });
+    },
+
     // Full buffer: a short, dull drop in pitch.
     full() {
       if (!live()) return;
@@ -903,7 +1008,8 @@ function skyDirToScreen(vx, vy) {
 }
 
 // The field's on-screen drift speed at mid-screen, in screen widths per second.
-const fieldSpeed = () => 1 / CONFIG.scrollTime;
+let fieldScale = 1;           // 0 holds the sky still (bonus nights)
+const fieldSpeed = () => fieldScale / CONFIG.scrollTime;
 
 // The whole field turns around a pole below the screen, like the sky turning
 // around the celestial pole. Distance from the pole to the screen centre:
@@ -998,11 +1104,15 @@ let lostPipFlash = 0;      // seconds left of the red blink on the diamond(s) ju
 let hintStage = 0;         // first-night tutorial: 0 tag, 1 wait, 2 link, 3 done
 let tutorObj = null;       // the object the tutorial is pointing at
 let nextId = 1;
+let bonusLook = false;     // the bonus night's still sky and Saturn (from its title card to the next night)
+
+// Seconds in the current night (bonus nights are shorter).
+const nightLen = () => night?.bonus ? CONFIG.bonus.length : (night?.diff.length ?? CONFIG.nightLength);
 
 // Difficulty for night n, from CONFIG.nights (and CONFIG.afterTable past its end).
 function nightDifficulty(n) {
   const table = CONFIG.nights;
-  const d = { ...table[Math.min(n, table.length) - 1] };
+  const d = { length: CONFIG.nightLength, ...table[Math.min(n, table.length) - 1] };
   const extra = n - table.length;
   if (extra > 0) {
     const g = CONFIG.afterTable;
@@ -1039,7 +1149,7 @@ function makeNight(number) {
     t: 0,                  // seconds into the night
     firstSpawned: false,
     // Maybe a UFO tonight, at an unannounced moment that leaves it time to finish its routine.
-    ufoAt: Math.random() < ufoChance(number) ? rand(12, CONFIG.nightLength - 14) : null,
+    ufoAt: Math.random() < ufoChance(number) ? rand(12, diff.length - 14) : null,
     criticals: planCriticals(diff, number),   // near-Earth and interstellar objects, in arrival order
     gameOverIn: null,      // counts down to the game-over screen once health hits zero
   };
@@ -1048,8 +1158,9 @@ function makeNight(number) {
 function newStats() {
   return {
     score: 0,
-    linked: { mainBelt: 0, comet: 0, neo: 0, iso: 0, ufo: 0 },
+    linked: { mainBelt: 0, comet: 0, neo: 0, iso: 0, ufo: 0, bigComet: 0, chunk: 0, pebble: 0 },
     ufoSeen: 0,
+    made: { bigComet: 0, chunk: 0, pebble: 0 },   // bonus night: how many appeared
     lost: 0,               // tagged objects that left the field before linking
     starsTagged: 0,
     neoCaught: 0,
@@ -1066,6 +1177,10 @@ function newStats() {
 const START_NIGHT = Math.max(1, Math.floor(Number(new URLSearchParams(location.search).get('night'))) || 1);
 if (START_NIGHT > 1) document.getElementById('version').textContent += ` · starts at night ${START_NIGHT}`;
 
+// Testing: add ?bonus=1 to the page address and every run starts with a
+// bonus night (then the usual first night).
+const BONUS_FIRST = new URLSearchParams(location.search).get('bonus') === '1';
+
 // Game events for the GoatCounter dashboard (see the script at the end of the
 // page). Test runs (?night=N) aren't counted. Does nothing if the counter
 // didn't load (offline, blocked, or a local copy of the page).
@@ -1081,22 +1196,40 @@ function startRun() {
     health: CONFIG.startHealth,
     score: 0,              // points from finished nights (the HUD adds the current night)
     nightsCompleted: 0,
-    linked: { mainBelt: 0, comet: 0, ufo: 0 },
+    linked: { mainBelt: 0, comet: 0, ufo: 0, bigComet: 0, chunk: 0, pebble: 0 },
+    bonusNights: 0,        // bonus nights played (their pieces get Game Over rows once there's been one)
     ufoSeen: 0,
     neoCaught: 0,
     neoMissed: 0,
     isoCaught: 0,
     isoMissed: 0,
   };
-  startNight(START_NIGHT);
+  startNight(START_NIGHT, BONUS_FIRST);
 }
 
-function startNight(number) {
+// A bonus night keeps the number of the night that follows it.
+function startNight(number, bonus = false) {
   adoptWindowAsField();     // a resize during the last night takes effect now
   fitView();
+  // A fresh sky every night: new stars and new Milky Way clouds (built
+  // during the breather if there was one, so nothing stutters now).
+  seedFieldStars();
+  if (nextMilky && nextMilky.fw === W && nextMilky.fh === H) milkyImg = nextMilky;
+  else { pickMilkySeed(bonus); milkyImg = null; }   // built on the first frame
+  nextMilky = null;
   Sound.unlock();
-  Sound.setNight(number);
+  Sound.setNight(bonus ? 1 : number);
   night = makeNight(number);
+  bonusLook = bonus;
+  fieldScale = bonus ? 0 : 1;
+  if (bonus) {
+    night.bonus = true;
+    night.criticals = [];
+    night.ufoAt = null;
+    night.firstSpawned = true;                 // no guaranteed opening asteroid: the big comet is it
+    night.cometsAt = [...CONFIG.bonus.cometsAt];
+    night.clearSince = null;                   // when the field last became clear of comet pieces
+  }
   stats = newStats();
   objects = [];
   slots = new Array(CONFIG.bufferSlots).fill(null);
@@ -1106,9 +1239,10 @@ function startNight(number) {
   damageFlash = 0;
   healFlash = 0;
   lostPipFlash = 0;
-  hintStage = number === 1 ? 0 : 3;     // how-to hints on the first night only
+  hintStage = number === 1 && !bonus ? 0 : 3;     // how-to hints on the first night only
   tutorObj = null;
-  if (number > 1) addBanner(`NIGHT ${number}`, 3);   // no hint of how many critical targets are coming
+  if (bonus) addBanner('BONUS NIGHT', 3);
+  else if (number > 1) addBanner(`NIGHT ${number}`, 3);   // no hint of how many critical targets are coming
   mode = 'playing';
   titleEl.classList.add('hidden');
   summaryEl.classList.add('hidden');
@@ -1122,6 +1256,8 @@ function addNightToRun() {
   run.linked.mainBelt += stats.linked.mainBelt;
   run.linked.comet += stats.linked.comet;
   run.linked.ufo += stats.linked.ufo;
+  for (const k of ['bigComet', 'chunk', 'pebble']) run.linked[k] += stats.linked[k];
+  if (night.bonus) run.bonusNights++;
   run.ufoSeen += stats.ufoSeen;
   run.neoCaught += stats.neoCaught;
   run.neoMissed += stats.neoMissed;
@@ -1133,6 +1269,14 @@ function addNightToRun() {
 function endNight() {
   Sound.nightEnd();
   addNightToRun();
+  if (night.bonus) {                          // not a night of the run: no count, no power change
+    mode = 'summary';
+    objects = [];
+    slots.fill(null);
+    setHudButtons(false);
+    showBonusSummary();
+    return;
+  }
   run.nightsCompleted++;
   if (stats.neoMissed + stats.isoMissed === 0 && run.health < CONFIG.maxHealth) {
     stats.restored = Math.min(CONFIG.cleanNightRestore, CONFIG.maxHealth - run.health);
@@ -1161,7 +1305,11 @@ function gameOver() {
 // Back to the start screen, dropping the current run.
 function goToTitle() {
   mode = 'title';
+  afterBreather = null;
+  nextMilky = null;
   run = null;
+  bonusLook = false;
+  fieldScale = 1;
   objects = [];
   slots.fill(null);
   pauseEl.classList.add('hidden');
@@ -1197,10 +1345,11 @@ function resumeGame() {
 // all scaled by tonight's difficulty.
 function spawnRate(t) {
   const c = CONFIG;
+  if (night?.bonus) return c.baseSpawnRate * c.bonus.trickle;
   const nightScale = night ? night.diff.spawn : 1;
   const quiet = night ? night.diff.quietStart : 10;
   if (t < quiet) return c.baseSpawnRate * c.quietSpawnFactor * nightScale;
-  const p = clamp((t - quiet) / (c.nightLength - quiet), 0, 1);
+  const p = clamp((t - quiet) / (nightLen() - quiet), 0, 1);
   return c.baseSpawnRate * nightScale * (c.rampLow + (c.rampHigh - c.rampLow) * Math.pow(p, c.rampExponent));
 }
 
@@ -1305,11 +1454,12 @@ function spawnStar() {
 }
 
 function spawnRandom() {
-  const type = pickWeighted(CONFIG.mix);
+  const type = pickWeighted(night?.bonus ? CONFIG.bonus.mix : CONFIG.mix);
   if (type === 'mainBelt') spawnMainBelt();
   else if (type === 'comet') {
     const comets = objects.filter(o => o.type === 'comet' && o.state !== 'linked').length;
-    if (comets < CONFIG.comet.maxOnScreen) spawnComet(); else spawnMainBelt();
+    if (comets < CONFIG.comet.maxOnScreen) spawnComet();
+    else spawnMainBelt();
   }
   else if (type === 'star') spawnStar();
 }
@@ -1379,6 +1529,137 @@ function updateUfo(o, dt) {
 
 
 /* ==========================================================================
+   BONUS NIGHT
+   A big comet comes on screen early. Linking it (or leaving it alone for a
+   while) breaks it into chunks; each chunk breaks the same way into
+   pebbles, which are caught with one tap. All three score. Up to three big
+   comets a night. Fragments burst out from where their parent was,
+   then slow to a gentle drift (their `cv` cruise velocity), leaning toward
+   mid-screen so a breakup near an edge doesn't lose them all at once.
+   ========================================================================== */
+const B = CONFIG.bonus;
+
+// A lumpy rock outline, as for main-belt asteroids.
+function lumpy(o) {
+  const n = 8 + Math.floor(Math.random() * 3);
+  o.shape = [];
+  for (let i = 0; i < n; i++) o.shape.push(rand(0.68, 1.0));
+  o.rot = rand(0, TAU);
+  o.spin = rand(-0.8, 0.8);
+}
+
+// A chunk: a jagged, elongated shard with deep notches, spinning fast and
+// tumbling end over end (see drawChunk).
+function shard(o) {
+  const c = B.chunk;
+  const n = 6 + Math.floor(Math.random() * 2);
+  o.pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU + rand(-0.25, 0.25);
+    const rr = i % 2 ? rand(0.4, 0.65) : rand(0.85, 1.15);   // alternate points and notches
+    o.pts.push([Math.cos(a) * rr * 1.35, Math.sin(a) * rr * 0.8]);
+  }
+  o.rot = rand(0, TAU);
+  o.spin = rand(...c.spin) * (Math.random() < 0.5 ? -1 : 1);
+  o.tumble = rand(...c.tumble);
+  o.tumblePhase = rand(0, TAU);
+}
+
+function spawnBigComet() {
+  const c = B.bigComet;
+  const speed = rand(...c.speed);
+  const o = spawnMover('bigComet', speed, 0.3);   // aimed through the middle of the field
+  // It sweeps in fast and slows to its drift speed, so it is near mid-screen
+  // about `arriveIn` seconds after it appears, on any screen shape. Speed
+  // v(t) = speed + b·e^(−kt) covers speed·T + b(1 − e^(−kT))/k by time T.
+  const s = skyToScreen(o.x, o.y);
+  const u = skyDirToScreen(o.vx / speed, o.vy / speed);         // its heading on screen
+  const d = Math.max(0, ((W / 2 - s.x) * u.x + (H / 2 - s.y) * u.y) / W);   // widths to the point nearest mid-screen
+  const k = c.entryDrag, T = c.arriveIn;
+  const b = Math.max(0, (d - speed * T) * k / (1 - Math.exp(-k * T)));
+  o.cvx = o.vx; o.cvy = o.vy; o.drag = k;
+  o.vx *= (speed + b) / speed; o.vy *= (speed + b) / speed;
+  // Dust-tail dots: where each is along the tail (0 → 1, streaming outward),
+  // which side of the axis, and its own sway.
+  o.tail = [];
+  for (let i = 0; i < c.tailDots; i++) {
+    o.tail.push({ k: Math.random(), side: rand(-1, 1), phase: rand(0, TAU), flow: rand(...c.tailFlow) });
+  }
+  stats.made.bigComet++;
+  objects.push(o);
+}
+
+// Break o into its pieces. Called on link (o is already 'linked' and fades
+// out with the link ring) or by the fallback timer (o fades out white).
+function breakUp(o) {
+  const big = o.type === 'bigComet';
+  const kind = big ? 'chunk' : 'pebble';
+  const c = B[kind];
+  const n = big ? B.bigComet.chunks : B.chunk.pebbles;
+  if (o.state !== 'linked') {
+    freeSlot(o);
+    o.state = 'broken';
+    o.fade = 0;
+  }
+  const s = skyToScreen(o.x, o.y);
+  let tx = W / 2 - s.x, ty = H / 2 - s.y;             // toward mid-screen
+  const tl = Math.hypot(tx, ty) || 1;
+  tx /= tl; ty /= tl;
+  const a0 = rand(0, TAU);
+  for (let i = 0; i < n; i++) {
+    const ang = a0 + (i / n) * TAU + rand(-0.35, 0.35);   // spread evenly, with a little scatter
+    const ux = Math.cos(ang), uy = Math.sin(ang);
+    let dx = ux + tx * B.towardCentre, dy = uy + ty * B.towardCentre;
+    const dl = Math.hypot(dx, dy) || 1;
+    dx /= dl; dy /= dl;
+    const burst = rand(...c.burst), cruise = rand(...c.speed);
+    const v = screenDirToSky(ux * burst, uy * burst);
+    const cv = screenDirToSky(dx * cruise, dy * cruise);
+    const f = makeObject(kind, o.x, o.y, v.x + o.vx * 0.4, v.y + o.vy * 0.4);
+    f.cvx = cv.x + o.vx * 0.3;
+    f.cvy = cv.y + o.vy * 0.3;
+    // Its drift and the parent's can nearly cancel, leaving a piece that
+    // never moves (and so never turns blue). Never slower than its minimum.
+    const cs = Math.hypot(f.cvx, f.cvy);
+    if (cs < c.speed[0]) {
+      const k = cs > 1e-6 ? c.speed[0] / cs : 0;
+      f.cvx = k ? f.cvx * k : cv.x * c.speed[0] / cruise;
+      f.cvy = k ? f.cvy * k : cv.y * c.speed[0] / cruise;
+    }
+    f.drag = c.drag;
+    f.entered = true;
+    if (big) shard(f); else lumpy(f);
+    objects.push(f);
+  }
+  stats.made[kind] += n;
+  if (big) addBanner('COMET BREAKUP!', 2.5);
+  Sound.breakup(big);
+}
+
+// Each frame of a bonus night: bring on the big comets, and break up any big
+// comet or chunk that has been left alone too long.
+function updateBonus() {
+  // The next big comet comes at its time, or sooner once the last one's
+  // pieces are all caught or gone.
+  const pieces = objects.some(o => !o.removed && o.state !== 'linked' && o.state !== 'broken' &&
+    (o.type === 'bigComet' || o.type === 'chunk' || o.type === 'pebble'));
+  if (pieces || !stats.made.bigComet) night.clearSince = null;
+  else if (night.clearSince === null) night.clearSince = night.t;
+  const clearLongEnough = night.clearSince !== null && night.t - night.clearSince >= B.nextWhenClear && night.t <= B.lastCometBy;
+  if (night.cometsAt.length && (night.t >= night.cometsAt[0] || clearLongEnough)) {
+    night.cometsAt.shift();
+    night.clearSince = null;
+    spawnBigComet();
+  }
+  for (const o of objects.slice()) {
+    if (o.removed || o.state === 'linked' || o.state === 'broken') continue;
+    if ((o.type === 'bigComet' && o.age >= B.bigComet.breakAfter) ||
+        (o.type === 'chunk' && o.age >= B.chunk.breakAfter)) breakUp(o);
+  }
+}
+
+
+/* ==========================================================================
    CRITICAL TARGETS (near-Earth objects)
    Arrival times are picked at the start of the night. The path is picked
    when the warning starts, so the warning marker points at the real entry.
@@ -1406,8 +1687,9 @@ function planCriticals(diff, number) {
   // Slowest possible crossing on this screen shape, corner to corner.
   // (The field can push against it, so take its slowest speed minus the field's.)
   const worstCross = (Math.hypot(1, H / W) + 2 * CONFIG.edgeMargin) / (c.speedMin * diff.neoSpeed - 2 * fieldSpeed());
-  const latest = Math.min(c.windowEnd, CONFIG.nightLength - worstCross - c.endBuffer);
-  const first = Math.max(diff.warningLead, types.length === 1 ? c.windowStart : c.multiWindowStart);
+  const len = diff.length, k = len / 60;        // the windows are set for a 60 s night
+  const latest = Math.min(c.windowEnd * k, len - worstCross - c.endBuffer);
+  const first = Math.max(diff.warningLead, types.length === 1 ? c.windowStart * k : c.multiWindowStart);
   const start = Math.min(first, latest);
   const slice = (latest - start) / n;
   // On crowded nights the slices get short; shrink the gap rather than pile
@@ -1485,7 +1767,8 @@ function freeSlot(o) {
 }
 
 // Each type's config block, and its points and arc distance (a type can override the global arc).
-const TYPE_CFG = { mainBelt: CONFIG.mainBelt, comet: CONFIG.comet, neo: CONFIG.neo, iso: CONFIG.iso, ufo: CONFIG.ufo, star: CONFIG.star };
+const TYPE_CFG = { mainBelt: CONFIG.mainBelt, comet: CONFIG.comet, neo: CONFIG.neo, iso: CONFIG.iso, ufo: CONFIG.ufo, star: CONFIG.star,
+  bigComet: CONFIG.bonus.bigComet, chunk: CONFIG.bonus.chunk, pebble: CONFIG.bonus.pebble };
 const pointsFor = o => TYPE_CFG[o.type].points;
 const arcFor = o => o.arc ?? TYPE_CFG[o.type].arcDistance ?? CONFIG.arcDistance;
 
@@ -1527,12 +1810,13 @@ function linkObject(o) {
     addBanner('OBSERVING BONUS', 2.5);
   }
   const s = skyToScreen(o.x, o.y);
-  popups.push({ x: s.x, y: s.y, text: `+${pts}`, t: 0 });
+  if (pts > 0) popups.push({ x: s.x, y: s.y, text: `+${pts}`, t: 0 });
   if (hintStage === 2 && o === tutorObj) {
     hintStage = 3;
     addBanner('LINKED! KEEP GOING', 2.5);
   }
   Sound.link(o);
+  if (o.type === 'bigComet' || o.type === 'chunk') breakUp(o);
 }
 
 // An object left the field. Tagged objects free their slot; real objects
@@ -1582,7 +1866,8 @@ function loseHealth(amount) {
 function tapRadiusPx() { return Math.max(CONFIG.tapRadius * W, CONFIG.tapRadiusMinPx); }
 
 // A tap links the nearest blue object in range; failing that it tags the
-// nearest white one. Yellow objects and empty sky ignore taps.
+// nearest white one. Yellow objects and empty sky ignore taps. A bonus
+// night's pebble is caught by its first tap, without using the buffer.
 function handleTap(px, py) {
   if (night.gameOverIn !== null) return;    // no more play once health is gone
   const r = tapRadiusPx();
@@ -1596,6 +1881,10 @@ function handleTap(px, py) {
     else if (o.state === 'unknown' && o.alpha > 0.5 && d < freshD) { fresh = o; freshD = d; }
   }
   if (ready) linkObject(ready);
+  else if (fresh && fresh.type === 'pebble') {
+    fresh.note = Math.floor(Math.random() * CONFIG.sound.scale.length);   // its link run starts on a random note
+    linkObject(fresh);
+  }
   else if (fresh) tagObject(fresh);
 }
 
@@ -1606,6 +1895,11 @@ function handleTap(px, py) {
 function updateObject(o, dt) {
   o.age += dt;
   if (o.type === 'ufo' && o.state !== 'linked') updateUfo(o, dt);
+  if (o.cvx !== undefined) {               // a bonus fragment: its burst slows to its cruise velocity
+    const k = 1 - Math.exp(-o.drag * dt);
+    o.vx += (o.cvx - o.vx) * k;
+    o.vy += (o.cvy - o.vy) * k;
+  }
   o.vx += o.ax * dt;
   o.vy += o.ay * dt;
   o.x += o.vx * dt;
@@ -1637,7 +1931,7 @@ function updateObject(o, dt) {
     freeSlot(o);
   }
 
-  if (o.state === 'linked') {
+  if (o.state === 'linked' || o.state === 'broken') {
     o.fade += dt / CONFIG.linkFadeTime;
     if (o.fade >= 1) o.removed = true;
     return;
@@ -1666,6 +1960,7 @@ function updateNight(dt) {
     if (Math.random() < spawnRate(night.t) * dt) spawnRandom();
     updateCriticals();
     if (night.ufoAt !== null && night.t >= night.ufoAt) { spawnUfo(); night.ufoAt = null; }
+    if (night.bonus) updateBonus();
   }
 
   for (const o of objects) updateObject(o, dt);
@@ -1683,7 +1978,7 @@ function updateNight(dt) {
   if (night.gameOverIn !== null) {
     night.gameOverIn -= dt;
     if (night.gameOverIn <= 0) gameOver();
-  } else if (night.t >= CONFIG.nightLength) {
+  } else if (night.t >= nightLen()) {
     endNight();
   }
 }
@@ -1709,14 +2004,16 @@ function stateColor(o) {
 function dawnAmount() {
   const d = CONFIG.dawn;
   if (!d.enabled || (mode !== 'playing' && mode !== 'paused')) return 0;
-  return clamp((night.t - (CONFIG.nightLength - d.duration)) / d.duration, 0, 1);
+  return clamp((night.t - (nightLen() - d.duration)) / d.duration, 0, 1);
 }
 
 function drawSky() {
+  if (bonusLook) { drawBonusSky(); return; }
   const dawn = dawnAmount();
   ctx.fillStyle = dawn > 0 ? mixHex(C.sky, C.dawnSky, dawn) : C.sky;
   ctx.fillRect(0, 0, W, H);
 
+  drawMilkyWay(dawn);
   const fade = 1 - CONFIG.dawn.starFade * dawn;
   ctx.fillStyle = C.fieldStar;
   for (const s of fieldStars) {
@@ -1732,6 +2029,115 @@ function drawSky() {
     }
   }
   ctx.globalAlpha = 1;
+}
+
+// The Milky Way: one low-resolution image of a disc of sky centred on the
+// pole the field turns around, built fresh each night (and when the field
+// changes size), then drawn turned with the sky.
+let milkyImg = null;
+let milkySeed = Math.random() * 1000;     // new each night (see startNight)
+let nextMilky = null;                    // the next night's clouds, built during the breather
+
+// How far the band is from the pole at angle th around it.
+function bandRadius(th, pd, ph) {
+  const M = CONFIG.milkyWay;
+  return pd + M.wander[0] * Math.sin(2 * th + ph) + M.wander[1] * Math.sin(3 * th - 2 * ph);
+}
+// A new random cloud layout. For a bonus night, keep rolling until the band
+// crosses the (still) view at Saturn's height, so it passes behind the planet.
+function pickMilkySeed(bonus) {
+  milkySeed = Math.random() * 1000;
+  if (!bonus || !B.clouds) return;
+  const pd = poleDistance(), d = screenDirToSky(0, pd);
+  const th = Math.atan2(-d.y, -d.x);                      // direction from the pole to mid-screen
+  const target = pd - (B.saturn.y - 0.5) * H / W;          // distance from the pole to Saturn's height
+  for (let i = 0; i < 300; i++) {
+    if (Math.abs(bandRadius(th, pd, milkySeed % TAU) - target) < 0.1) return;
+    milkySeed = Math.random() * 1000;
+  }
+}
+function drawMilkyWay(dawn) {
+  const M = CONFIG.milkyWay;
+  if (!M.show) return;
+  if (!milkyImg || milkyImg.fw !== W || milkyImg.fh !== H) milkyImg = buildMilkyWay();
+  const pd = poleDistance();
+  const d = screenDirToSky(0, pd);
+  const pole = skyToScreen(cam.x + d.x, cam.y + d.y);
+  const half = milkyImg.width * M.pixel / 2;
+  ctx.save();
+  ctx.globalAlpha = 1 - M.dawnFade * dawn;
+  ctx.imageSmoothingEnabled = false;           // keep the big pixels crisp, like Saturn's
+  ctx.translate(pole.x, pole.y);
+  ctx.rotate(-cam.a);
+  ctx.drawImage(milkyImg, -half, -half, half * 2, half * 2);
+  ctx.restore();
+}
+
+// Smooth value noise, 0..1, and a few octaves of it.
+function noise2(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const h = (i, j) => {
+    let n = (i * 374761393 + j * 668265263 + Math.floor(milkySeed) * 2147483) | 0;
+    n = Math.imul(n ^ (n >>> 13), 1274126177);
+    return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
+  };
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = h(xi, yi), b = h(xi + 1, yi), c = h(xi, yi + 1), e = h(xi + 1, yi + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + e) * u * v;
+}
+function fbm(x, y) {
+  let t = 0, amp = 0.5, norm = 0;
+  for (let o = 0; o < 4; o++) { t += amp * noise2(x, y); norm += amp; x *= 2.03; y *= 2.03; amp *= 0.5; }
+  return t / norm;
+}
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+
+function buildMilkyWay() {
+  const M = CONFIG.milkyWay, px = M.pixel;
+  const pd = poleDistance();
+  // The farthest corner of the screen from the pole, in widths.
+  const reach = Math.hypot(0.5, pd + H / W / 2) + 0.05;
+  const inner = Math.max(0, pd - H / W / 2 - 0.05);
+  const size = Math.ceil(2 * reach * W / px);
+  const img = document.createElement('canvas');
+  img.width = img.height = size;
+  img.fw = W; img.fh = H;
+  const g = img.getContext('2d');
+  const data = g.createImageData(size, size);
+  const white = [232, 236, 245], blue = [0, 186, 188], yellow = [255, 219, 120];
+  const purple = [168, 120, 232], green = [120, 230, 160];
+  const ph = milkySeed % TAU;
+  for (let j = 0; j < size; j++) {
+    for (let i = 0; i < size; i++) {
+      const x = ((i + 0.5) / size * 2 - 1) * reach, y = ((j + 0.5) / size * 2 - 1) * reach;
+      const r = Math.hypot(x, y);
+      if (r > reach || r < inner) continue;
+      const th = Math.atan2(y, x);
+      // The band's distance from the pole swings as you go round it.
+      const rb = bandRadius(th, pd, ph);
+      const n1 = fbm(x / M.clump + 31, y / M.clump);
+      const n2 = fbm(x / (M.clump * 0.5) - 57, y / (M.clump * 0.5) + 11);
+      const dist = (r - rb) / (M.band * (0.75 + 0.5 * n1));
+      const band = Math.exp(-dist * dist);
+      const lane = Math.exp(-((dist / 0.35) ** 2)) * smooth(0.45, 0.7, n2) * M.rift;
+      const clumps = smooth(0.3, 0.75, n1);       // bright knots with gaps between them
+      let v = band * (0.15 + 0.95 * clumps) * (1 - lane) + M.haze * smooth(0.6, 0.85, n1) * (1 - band);
+      v = Math.floor(clamp(v, 0, 1) * M.levels) / M.levels;
+      if (v <= 0) continue;
+      const cool = M.tint * (1 - v), warm = M.warmth * v * v;
+      // Big soft patches lean purple or green; most of the cloud stays neutral.
+      const hue = fbm(x / M.patch + 101, y / M.patch - 73);
+      const pu = M.purple * smooth(0.52, 0.62, hue), gr = M.green * smooth(0.47, 0.37, hue) * (0.4 + 0.6 * v);
+      const k = (j * size + i) * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        data.data[k + ch] = white[ch] + (blue[ch] - white[ch]) * cool * (1 - pu) + (yellow[ch] - white[ch]) * warm * (1 - gr)   // no yellow in the green (it goes olive)
+          + (purple[ch] - white[ch]) * pu + (green[ch] - white[ch]) * gr;
+      }
+      data.data[k + 3] = Math.round(255 * M.brightness * v);
+    }
+  }
+  g.putImageData(data, 0, 0);
+  return img;
 }
 
 // Dotted line from the tag point (which moves with the stars) to the object,
@@ -1908,6 +2314,177 @@ function drawStar(o, s, r, col) {
   ctx.globalAlpha = a;
 }
 
+// Bonus night's big comet: a wide coma, a curving dust tail of pixel dots that
+// stream slowly away and sway, and a thin straight ion tail that flows.
+function drawBigComet(o, s, r, col) {
+  const c = B.bigComet;
+  const d = skyDirToScreen(o.vx, o.vy);
+  const len = Math.hypot(d.x, d.y) || 1;
+  const tx = -d.x / len, ty = -d.y / len;     // along the tail
+  const nx = -ty, ny = tx;                     // across it
+  const a = ctx.globalAlpha;
+  const L = r * c.tailLength;
+  const [cr, cg, cb] = hexToRgb(col);
+  ctx.save();
+  ctx.shadowBlur = 0;                          // dozens of dots: no glow, for speed
+  // Ion tail: dashes flowing straight back.
+  const g = ctx.createLinearGradient(s.x, s.y, s.x + tx * L * 1.2, s.y + ty * L * 1.2);
+  g.addColorStop(0, `rgba(${cr},${cg},${cb},0.45)`);
+  g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
+  ctx.strokeStyle = g;
+  ctx.lineWidth = Math.max(1, r * 0.18);
+  ctx.setLineDash([r * 0.9, r * 0.7]);
+  ctx.lineDashOffset = -clock * r * 2.5;
+  ctx.beginPath();
+  ctx.moveTo(s.x + tx * r, s.y + ty * r);
+  ctx.lineTo(s.x + tx * L * 1.2, s.y + ty * L * 1.2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // Dust tail: a soft glowing fan underneath...
+  ctx.fillStyle = col;
+  for (let i = 1; i <= 6; i++) {
+    const k = i / 7;
+    const bend = r * 1.6 * k * k;
+    ctx.globalAlpha = a * 0.07 * (1 - k * 0.7);
+    ctx.beginPath();
+    ctx.arc(s.x + tx * L * k + nx * bend, s.y + ty * L * k + ny * bend, r * (1.2 + 3 * k), 0, TAU);
+    ctx.fill();
+  }
+  // ...and pixel dots streaming down it, widening and bending gently to one side.
+  for (const p of o.tail) {
+    const k = (p.k + clock * p.flow) % 1;
+    const dist = r * 1.1 + L * k;
+    const sway = Math.sin(clock * 1.3 + p.phase - k * 4) * r * 0.5 * k;
+    const side = p.side * r * (0.6 + 3.6 * k * k) + sway + r * 1.6 * k * k;
+    const x = s.x + tx * dist + nx * side;
+    const y = s.y + ty * dist + ny * side;
+    const sz = Math.max(1.5, r * 0.5 * (1 - k * 0.5));
+    ctx.globalAlpha = a * 0.85 * Math.pow(1 - k, 0.8) * Math.min(1, k * 12) * (0.75 + 0.25 * Math.sin(clock * 3 + p.phase));
+    ctx.fillRect(x - sz / 2, y - sz / 2, sz, sz);
+  }
+  ctx.restore();
+  // Coma, then nucleus (with the usual glow).
+  ctx.fillStyle = col;
+  ctx.globalAlpha = a * 0.1;
+  ctx.beginPath(); ctx.arc(s.x, s.y, r * 3.2, 0, TAU); ctx.fill();
+  ctx.globalAlpha = a * 0.2;
+  ctx.beginPath(); ctx.arc(s.x, s.y, r * 1.9, 0, TAU); ctx.fill();
+  ctx.globalAlpha = a;
+  ctx.beginPath(); ctx.arc(s.x, s.y, r * 0.75, 0, TAU); ctx.fill();
+}
+
+// Bonus night's chunk: its shard outline, squashed and stretched as it tumbles.
+function drawChunk(o, s, r, col) {
+  const squash = 0.35 + 0.65 * Math.abs(Math.cos(clock * o.tumble + o.tumblePhase));
+  ctx.save();
+  ctx.translate(s.x, s.y);
+  ctx.rotate(o.rot);
+  ctx.scale(1, squash);
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1.7;
+  ctx.lineJoin = 'miter';
+  ctx.beginPath();
+  o.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * r, y * r) : ctx.moveTo(x * r, y * r)));
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+
+// Bonus night's sky: tinted, held still, few stars, and Saturn.
+let saturnImg = null;          // the low-resolution Saturn, built for the current field size
+// Dawn brightens it at the end, as on any night.
+function drawBonusSky() {
+  const dawn = night?.bonus ? dawnAmount() : 0;
+  ctx.fillStyle = mixHex(C.sky, C.dawnSky, B.skyTint + (1 - B.skyTint) * dawn);
+  ctx.fillRect(0, 0, W, H);
+  if (B.clouds) drawMilkyWay(dawn);             // held still with the sky, behind the stars and Saturn
+  const fade = 1 - CONFIG.dawn.starFade * dawn;
+  const step = Math.max(1, Math.round(1 / B.starShare));
+  ctx.fillStyle = C.fieldStar;
+  for (let i = 0; i < fieldStars.length; i += step) {
+    const s = fieldStars[i];
+    const p = skyToScreen(s.x, s.y);
+    ctx.globalAlpha = s.b * (0.85 + 0.15 * Math.sin(s.tw + clock * s.twSpeed)) * fade;
+    ctx.fillRect(p.x - s.size / 2, p.y - s.size / 2, s.size, s.size);
+  }
+  ctx.globalAlpha = 1;
+  if (!B.saturn.show) return;
+  ctx.globalAlpha = 1 - 0.4 * dawn;            // Saturn fades a little in the dawn too
+  if (!saturnImg || saturnImg.fw !== W || saturnImg.fh !== H) saturnImg = buildSaturn();
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;           // keep the big pixels crisp
+  ctx.drawImage(saturnImg, 0, 0, saturnImg.width * B.saturn.pixel, saturnImg.height * B.saturn.pixel);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+// Draw Saturn once into a small canvas (one pixel per `pixel` CSS px). Opaque
+// colours mixed from the sky, so the stars behind it are hidden.
+function buildSaturn() {
+  const S = B.saturn, px = S.pixel;
+  const img = document.createElement('canvas');
+  img.width = Math.ceil(W / px);
+  img.height = Math.ceil(H / px);
+  img.fw = W; img.fh = H;
+  const g = img.getContext('2d');
+  g.scale(1 / px, 1 / px);                     // draw in field px
+  const sky = mixHex(C.sky, C.dawnSky, B.skyTint);
+  const shade = t => mixHex(sky.startsWith('#') ? sky : rgbToHex(sky), C.white, t);
+  const R = S.radius * Math.min(W, H);
+  const cx = S.x * W, cy = S.y * H;
+  // Ring bands: [inner, outer] in planet radii, and brightness. The gap
+  // between the 2nd and 3rd is the Cassini Division.
+  const bands = [[1.25, 1.45, 0.45], [1.45, 1.82, 0.85], [1.9, 2.2, 0.65]];
+  const ringHalf = (back) => {
+    for (const [r0, r1, t] of bands) {
+      g.fillStyle = shade(S.brightness * t);
+      g.beginPath();
+      const a0 = back ? Math.PI : 0, a1 = back ? TAU : Math.PI;   // far half, or near half
+      g.ellipse(cx, cy, R * r1, R * r1 * S.flatten, S.tilt, a0, a1);
+      g.ellipse(cx, cy, R * r0, R * r0 * S.flatten, S.tilt, a1, a0, true);
+      g.closePath();
+      g.fill();
+    }
+  };
+  ringHalf(true);
+  // The disc, with bands parallel to the rings.
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.clip();
+  g.fillStyle = shade(S.brightness);
+  g.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+  g.translate(cx, cy);
+  g.rotate(S.tilt);
+  const stripes = [[-0.75, 0.18, 0.75], [-0.35, 0.12, 1.15], [0.05, 0.2, 0.85], [0.42, 0.1, 1.1], [0.7, 0.2, 0.7]];
+  for (const [y, h, t] of stripes) {
+    g.fillStyle = shade(S.brightness * t);
+    g.fillRect(-R * 1.2, y * R, R * 2.4, h * R);
+  }
+  // The rings' shadow across the disc, just below the near half of the rings.
+  g.fillStyle = shade(S.brightness * 0.35);
+  g.fillRect(-R * 1.2, R * 0.2, R * 2.4, R * 0.07);
+  g.restore();
+  // Night side: darken the limb away from the light (upper left).
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.clip();
+  const grad = g.createRadialGradient(cx - R * 0.35, cy - R * 0.35, R * 0.2, cx, cy, R * 1.05);
+  grad.addColorStop(0, 'rgba(0,0,0,0)');
+  grad.addColorStop(1, rgbaOf(sky, 0.7));
+  g.fillStyle = grad;
+  g.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+  g.restore();
+  ringHalf(false);
+  return img;
+}
+// mixHex returns 'rgb(r,g,b)'; these turn that back into hex or rgba().
+function rgbToHex(rgb) {
+  const [r, g, b] = rgb.match(/\d+/g).map(Number);
+  return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+}
+function rgbaOf(rgb, a) {
+  const [r, g, b] = rgb.match(/\d+/g).map(Number);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
 function drawObject(o) {
   const s = skyToScreen(o.x, o.y);
   const r = sizePx(TYPE_CFG[o.type]);
@@ -1916,7 +2493,8 @@ function drawObject(o) {
   drawArcTrail(o, s, r);
 
   ctx.save();
-  ctx.globalAlpha = o.alpha * (o.state === 'linked' ? 1 - o.fade : 1);
+  const fading = o.state === 'linked' || o.state === 'broken';
+  ctx.globalAlpha = o.alpha * (fading ? 1 - o.fade : 1);
   ctx.shadowColor = col;
   ctx.shadowBlur = o.state === 'ready' ? 10 + 6 * Math.sin(clock * 8) : 8;
   if (o.type === 'mainBelt') drawMainBelt(o, s, r, col);
@@ -1925,17 +2503,20 @@ function drawObject(o) {
   else if (o.type === 'iso') drawIso(o, s, r, col);
   else if (o.type === 'ufo') drawUfo(o, s, r, col);
   else if (o.type === 'star') drawStar(o, s, r, col);
+  else if (o.type === 'bigComet') drawBigComet(o, s, r, col);
+  else if (o.type === 'chunk') drawChunk(o, s, r, col);
+  else if (o.type === 'pebble') drawMainBelt(o, s, r, col);
   ctx.restore();
 
   // Ring pulse on tag / turning blue, and an expanding ring on link.
-  if (o.flash > 0 || o.state === 'linked') {
-    const p = o.state === 'linked' ? o.fade : 1 - o.flash;
+  if (o.flash > 0 || fading) {
+    const p = fading ? o.fade : 1 - o.flash;
     ctx.save();
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.5;
     ctx.globalAlpha = (1 - p) * 0.8;
     ctx.beginPath();
-    ctx.arc(s.x, s.y, r + 4 + p * (o.state === 'linked' ? 36 : 18), 0, TAU);
+    ctx.arc(s.x, s.y, r + 4 + p * (fading ? 36 : 18), 0, TAU);
     ctx.stroke();
     ctx.restore();
   }
@@ -2009,10 +2590,10 @@ function drawHud() {
   ctx.textAlign = 'left';
   ctx.globalAlpha = 0.55;
   ctx.font = font(11);
-  ctx.fillText(`NIGHT ${night.number}`, safe.left + 16, top);
+  ctx.fillText(night.bonus ? 'BONUS NIGHT' : `NIGHT ${night.number}`, safe.left + 16, top);
   ctx.globalAlpha = 1;
   ctx.font = font(big, 700);
-  ctx.fillText(String(Math.max(0, Math.ceil(CONFIG.nightLength - night.t))), safe.left + 16, top + 15);
+  ctx.fillText(String(Math.max(0, Math.ceil(nightLen() - night.t))), safe.left + 16, top + 15);
 
   // Top right: score.
   ctx.textAlign = 'right';
@@ -2024,7 +2605,7 @@ function drawHud() {
   ctx.fillText(String(run.score + stats.score), W - safe.right - 16, top + 15);
 
   // Under the score: health, as diamonds (the near-Earth object's shape).
-  drawHealth(W - safe.right - 16, top + 15 + big + 12);
+  if (!night.bonus) drawHealth(W - safe.right - 16, top + 15 + big + 12);   // Power isn't at risk on a bonus night
 
   // Centre: banners.
   ctx.textAlign = 'center';
@@ -2341,38 +2922,54 @@ function screenButton(label, onClick, about = true) {
   };
 }
 
-// End of a night that was survived. Everything linked goes under "Added to
-// database"; what got away follows: red if it cost power, yellow if not.
+// End of a night that was survived: "NIGHT n COMPLETE" and the total score
+// for a breather of a few seconds, then the next night starts by itself, like
+// an arcade game.
+let breatherLeft = 0;          // seconds until the next night starts (while mode is 'summary')
+let afterBreather = null;      // what starts it
 function showSummary() {
-  const s = stats;
-  const neoTotal = night.criticals.filter(c => c.type === 'neo').length;
-  const isoTotal = night.criticals.filter(c => c.type === 'iso').length;
-  const row = (label, n, pts, cls = '') =>
-    `<tr${cls ? ` class="${cls}"` : ''}><td>${label}</td><td class="n">${n}</td><td class="pts">${pts ?? ''}</td></tr>`;
-  const linkedRow = (label, type) => row(label, s.linked[type], s.linked[type] * CONFIG[type].points);
-  const next = screenButton('CONTINUE', () => startNight(night.number + 1), false);
+  const n = night.number, e = CONFIG.bonus.every;
+  showBreather(`NIGHT ${n} COMPLETE`, () => nextAfter(n), e > 0 && n % e === 0);
+}
+function showBreather(label, next, nextBonus = false) {
   summaryPanel.innerHTML = `
-    <div class="label">NIGHT ${night.number} COMPLETE</div>
-    <div class="score">${s.score}</div>
-    <table>
-      <tr class="head"><td colspan="3">ADDED TO DATABASE</td></tr>
-      ${linkedRow('Asteroids', 'mainBelt')}
-      ${linkedRow('Comets', 'comet')}
-      ${neoTotal ? linkedRow('Near-Earth objects', 'neo') : ''}
-      ${isoTotal ? linkedRow('Interstellar objects', 'iso') : ''}
-      ${s.ufoSeen ? linkedRow('UFOs', 'ufo') : ''}
-      <tr class="gap"><td colspan="3"></td></tr>
-      ${s.neoMissed ? row('Near-Earth objects missed', s.neoMissed, null, 'bad') : ''}
-      ${s.isoMissed ? row('Interstellar objects missed', s.isoMissed, null, 'bad') : ''}
-      ${s.ufoSeen - s.linked.ufo > 0 ? row('UFOs missed', s.ufoSeen - s.linked.ufo, null, 'warn') : ''}
-      ${row('Lost links', s.lost, null, 'warn')}
-      ${row('Stars tagged', s.starsTagged, null, 'warn')}
-      <tr class="gap"><td>${CONFIG.healthName}${s.restored ? ` <span class="restored">+${s.restored} clean night</span>` : ''}</td><td class="n">${healthHtml()}</td></tr>
-      <tr><td>Total score</td><td class="n">${run.score}</td></tr>
-    </table>
-    ${next.html}`;
+    <div class="label">${label}</div>
+    <div class="score">${run.score}</div>
+    <div class="label">TOTAL SCORE</div>`;
   summaryEl.classList.remove('hidden');
-  next.wire();
+  breatherLeft = CONFIG.breather;
+  afterBreather = next;
+  // Build the next night's clouds now, while everything is still (after
+  // this message has had a chance to show).
+  setTimeout(() => {
+    if (!afterBreather || !CONFIG.milkyWay.show) return;
+    pickMilkySeed(nextBonus);
+    nextMilky = buildMilkyWay();
+  }, 50);
+}
+// A tap on the message skips the rest of the breather.
+summaryEl.addEventListener('pointerdown', () => {
+  if (afterBreather && CONFIG.breather - breatherLeft >= CONFIG.breatherSkipAfter) breatherLeft = 0;
+});
+function updateBreather(dt) {
+  if (!afterBreather) return;
+  breatherLeft -= dt;
+  if (breatherLeft > 0) return;
+  const next = afterBreather;
+  afterBreather = null;
+  next();
+}
+
+// After night n: a bonus night every CONFIG.bonus.every nights, then night n + 1.
+function nextAfter(n) {
+  const e = CONFIG.bonus.every;
+  startNight(n + 1, e > 0 && n % e === 0);   // the bonus night keeps the next night's number
+}
+
+// End of a bonus night: the same breather, then the next night.
+function showBonusSummary() {
+  const n = night.number;
+  showBreather('BONUS NIGHT COMPLETE', () => startNight(n));
 }
 
 // Power ran out.
@@ -2385,6 +2982,13 @@ function showGameOver() {
       <tr><td>Interstellar objects linked</td><td class="n">${run.isoCaught}</td><td class="pts">${run.isoCaught * CONFIG.iso.points}</td></tr>` : '';
   const ufoRows = run.ufoSeen ? `
       <tr><td>UFOs linked</td><td class="n">${run.linked.ufo}</td><td class="pts">${run.linked.ufo * CONFIG.ufo.points}</td></tr>` : '';
+  // Bonus-night pieces, once the run has had a bonus night.
+  const bonusRow = (label, k, cls = '') =>
+    `<tr${cls ? ` class="${cls}"` : ''}><td>${label}</td><td class="n">${run.linked[k]}</td><td class="pts">${run.linked[k] * B[k].points || ''}</td></tr>`;
+  const bonusRows = run.bonusNights ? `
+      ${bonusRow('Big comets linked', 'bigComet', 'gap')}
+      ${bonusRow('Chunks linked', 'chunk')}
+      ${bonusRow('Pebbles caught', 'pebble')}` : '';
   summaryPanel.innerHTML = `
     <div class="gameover">GAME OVER</div>
     <div class="score">${run.score}</div>
@@ -2394,7 +2998,7 @@ function showGameOver() {
       <tr><td>Nights cataloged</td><td class="n">${nights}</td></tr>
       <tr class="gap"><td>Asteroids linked</td><td class="n">${run.linked.mainBelt}</td><td class="pts">${run.linked.mainBelt * CONFIG.mainBelt.points}</td></tr>
       <tr><td>Comets linked</td><td class="n">${run.linked.comet}</td><td class="pts">${run.linked.comet * CONFIG.comet.points}</td></tr>
-      <tr><td>Near-Earth objects linked</td><td class="n">${run.neoCaught}</td><td class="pts">${run.neoCaught * CONFIG.neo.points}</td></tr>${isoRows}${ufoRows}
+      <tr><td>Near-Earth objects linked</td><td class="n">${run.neoCaught}</td><td class="pts">${run.neoCaught * CONFIG.neo.points}</td></tr>${isoRows}${ufoRows}${bonusRows}
     </table>
     ${again.html}`;
   summaryEl.classList.remove('hidden');
@@ -2473,11 +3077,12 @@ function frame(now) {
   const dt = clamp((now - last) / 1000, 0, 0.05);
   last = now;
   clock += dt;
-  if (mode !== 'paused') {
+  if (mode !== 'paused' && mode !== 'summary') {   // the sky holds still while paused and during the breather
     updateCamera(dt);
     updateFieldStars();
   }
   if (mode === 'playing') updateNight(dt);
+  if (mode === 'summary') updateBreather(dt);
   if (mode === 'title') drawTitleIcons();
   render();
   requestAnimationFrame(frame);
